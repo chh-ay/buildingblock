@@ -1,6 +1,6 @@
 # buildingblock
 
-Voxel building sandbox in the browser. **[Try it](https://chh-ay.github.io/buildingblock/)** — no install, no account.
+Voxel building sandbox in the browser. **[Try it](https://chh-ay.github.io/buildingblock/)**
 
 ![buildingblock](public/og.png)
 
