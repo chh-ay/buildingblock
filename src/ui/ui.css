@@ -685,19 +685,64 @@ kbd {
   cursor: progress;
 }
 
-.replay-banner {
+.replay-transport {
   position: fixed;
-  top: 58px;
+  bottom: 18px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 80;
-  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(520px, calc(100vw - 48px));
+  padding: 8px 12px;
   background: rgba(22, 22, 26, 0.92);
-  border: 1px solid rgba(63, 167, 196, 0.5);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(63, 167, 196, 0.45);
   border-radius: 999px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+.replay-transport button {
+  font: inherit;
   color: #e8e8e4;
-  font-size: 12px;
-  pointer-events: none;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.replay-transport button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.rt-play {
+  width: 34px;
+  height: 28px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.rt-scrub {
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  accent-color: #3fa7c4;
+  cursor: pointer;
+}
+
+.rt-speed {
+  min-width: 44px;
+  height: 28px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rt-skip {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 11px;
 }
 
 /* ── consolidated file panel & share ─────────────────────────────────────── */

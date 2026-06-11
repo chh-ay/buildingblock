@@ -54,6 +54,7 @@ import { type AppActions, createAppState, type ToolId } from "./state";
 import { openGallery as openGalleryModal } from "./ui/gallery";
 import { initUi } from "./ui/index";
 import { pickWorldSize } from "./ui/size-picker";
+import { createReplayTransport, type ReplayTransport } from "./ui/transport";
 
 const showFatal = (message: string): void => {
   const overlay = document.createElement("div");
@@ -200,8 +201,11 @@ const boot = async (): Promise<void> => {
     restore: (snapshot) => restoreSnapshot(snapshot),
   });
 
-  /** Whole-world replacement used by saves, imports, gallery, and collab snapshots. */
-  const restoreSnapshot = (snapshot: WorldSnapshot, borrowed = false): void => {
+  /**
+   * Whole-world replacement used by saves, imports, gallery, and collab snapshots.
+   * Returns false when the dims differ and the page is rebooting into them.
+   */
+  const restoreSnapshot = (snapshot: WorldSnapshot, borrowed = false): boolean => {
     if (snapshot.sx !== WORLD_SX || snapshot.sy !== WORLD_SY || snapshot.sz !== WORLD_SZ) {
       // Different world size: park it in the pending slot (autosave intact) and reboot into its dims.
       state.toast.set("World size differs — reloading");
@@ -209,12 +213,13 @@ const boot = async (): Promise<void> => {
         .flush()
         .then(() => saves.stashPending(snapshot))
         .then(() => window.location.reload());
-      return;
+      return false;
     }
     if (borrowed) saves.hold();
     world.loadSnapshot(snapshot);
     undo.clear();
     journal.reset(encodeSnapshot(snapshot));
+    return true;
   };
 
   // ── collaboration (zero-host WebRTC room; edits broadcast as packed keys) ──
@@ -543,20 +548,31 @@ const boot = async (): Promise<void> => {
     cameraRig.camera.lookAt(cameraRig.controls.target);
   };
 
+  const REPLAY_SPEEDS = [0.5, 1, 2, 4] as const;
   interface ReplayRun {
     startedAt: number;
     durationMs: number;
+    /** Timeline position in ms; advanced by dt × speed while playing, set directly by seeks. */
+    progressMs: number;
+    lastNow: number;
+    playing: boolean;
+    speed: number;
+    /** Scrub target (0..1) waiting to be applied; at most one seek lands per frame. */
+    pendingSeek: number | null;
     applied: number;
     total: number;
     statesBefore: number;
     angle0: number;
     center: { x: number; y: number; z: number };
     radius: number;
+    /** Decoded once so backward seeks can rebuild without re-parsing the baseline. */
+    baselineSnapshot: WorldSnapshot | null;
     lastTickSoundAt: number;
     savedCameraPos: Vector3;
     savedTarget: Vector3;
     blocker: HTMLDivElement;
-    banner: HTMLDivElement;
+    transport: ReplayTransport;
+    homeAfter: boolean;
   }
   let replayRun: ReplayRun | null = null;
   const journalScratch: JournalEntry = { x: 0, y: 0, z: 0, key32: 0, shape: 0 };
@@ -577,23 +593,34 @@ const boot = async (): Promise<void> => {
 
   const finishReplay = (skipped: boolean): void => {
     if (!replayRun) return;
+    const wasShowcase = replayRun.homeAfter;
     applyJournalRange(replayRun.applied, replayRun.total, false);
     journalTracking = true;
     // Intern order is deterministic, so ids only diverge when states were interned but never
     // written (preview-only); then the undo stack's ids are unsafe and it resets.
     if (world.stateCount !== replayRun.statesBefore) undo.clear();
-    cameraRig.camera.position.copy(replayRun.savedCameraPos);
-    cameraRig.controls.target.copy(replayRun.savedTarget);
+    if (replayRun.homeAfter) {
+      frameHero();
+    } else {
+      cameraRig.camera.position.copy(replayRun.savedCameraPos);
+      cameraRig.controls.target.copy(replayRun.savedTarget);
+    }
     replayRun.blocker.remove();
-    replayRun.banner.remove();
+    replayRun.transport.dispose();
     replayRun = null;
     state.replaying.set(false);
     saves.release();
     saves.autosaveSoon();
-    state.toast.set(skipped ? "Replay skipped" : "That's how it was built");
+    state.toast.set(
+      skipped
+        ? "Skipped — it's all yours"
+        : wasShowcase
+          ? "Built. Now remix it"
+          : "That's how it was built",
+    );
   };
 
-  const beginReplay = (): void => {
+  const beginReplay = (homeAfter = false): void => {
     if (replayRun) return;
     if (net) {
       state.toast.set("Replay is solo — leave the room first");
@@ -610,14 +637,33 @@ const boot = async (): Promise<void> => {
     const { center, radius } = orbitFrame();
     const blocker = document.createElement("div");
     blocker.className = "input-blocker";
-    const banner = document.createElement("div");
-    banner.className = "replay-banner";
-    banner.textContent = "Replaying your build — Esc to skip";
-    document.body.append(blocker, banner);
+    document.body.append(blocker);
+    const transport = createReplayTransport({
+      onTogglePlay: () => {
+        if (!replayRun) return;
+        replayRun.playing = !replayRun.playing;
+        replayRun.transport.setPlaying(replayRun.playing);
+      },
+      onSeek: (frac) => {
+        if (replayRun) replayRun.pendingSeek = frac;
+      },
+      onCycleSpeed: () => {
+        if (!replayRun) return;
+        const at = REPLAY_SPEEDS.indexOf(replayRun.speed as (typeof REPLAY_SPEEDS)[number]);
+        replayRun.speed = REPLAY_SPEEDS[(at + 1) % REPLAY_SPEEDS.length];
+        replayRun.transport.setSpeed(replayRun.speed);
+      },
+      onSkip: () => finishReplay(true),
+    });
 
     replayRun = {
       startedAt: performance.now(),
       durationMs: replayDurationMs(journal.length),
+      progressMs: 0,
+      lastNow: performance.now(),
+      playing: true,
+      speed: 1,
+      pendingSeek: null,
       applied: 0,
       total: journal.length,
       statesBefore: world.stateCount,
@@ -627,45 +673,119 @@ const boot = async (): Promise<void> => {
       ),
       center,
       radius,
+      baselineSnapshot: journal.baseline ? decodeSnapshot(journal.baseline) : null,
       lastTickSoundAt: 0,
       savedCameraPos: cameraRig.camera.position.clone(),
       savedTarget: cameraRig.controls.target.clone(),
       blocker,
-      banner,
+      transport,
+      homeAfter,
     };
     state.replaying.set(true);
     journalTracking = false;
     saves.hold();
     sound.play("ui");
-    if (journal.baseline) world.loadSnapshot(decodeSnapshot(journal.baseline));
+    if (replayRun.baselineSnapshot) world.loadSnapshot(replayRun.baselineSnapshot);
     else world.clear();
+  };
+
+  /** Rebuild the journal as a synthetic bottom-up construction sequence (gallery / share showcases). */
+  const stageShowcase = (snapshot: WorldSnapshot): void => {
+    const cells: {
+      x: number;
+      y: number;
+      z: number;
+      key32: number;
+      shape: number;
+      order: number;
+    }[] = [];
+    let sumX = 0;
+    let sumZ = 0;
+    for (const chunk of snapshot.chunks) {
+      const baseX = (chunk.ci % WORLD_CX) << CHUNK_BITS;
+      const baseZ = (((chunk.ci / WORLD_CX) | 0) % WORLD_CZ) << CHUNK_BITS;
+      const baseY = ((chunk.ci / (WORLD_CX * WORLD_CZ)) | 0) << CHUNK_BITS;
+      const states = chunk.states;
+      for (let i = 0; i < states.length; i++) {
+        const stateId = states[i];
+        if (stateId === AIR) continue;
+        const x = baseX + (i & (CHUNK_SIZE - 1));
+        const z = baseZ + ((i >> CHUNK_BITS) & (CHUNK_SIZE - 1));
+        const y = baseY + (i >> (CHUNK_BITS << 1));
+        cells.push({
+          x,
+          y,
+          z,
+          key32: snapshot.stateTable[stateId] ?? 0,
+          shape: snapshot.stateShapes[stateId] ?? 0,
+          order: 0,
+        });
+        sumX += x;
+        sumZ += z;
+      }
+    }
+    if (cells.length === 0) return;
+    const centerX = sumX / cells.length;
+    const centerZ = sumZ / cells.length;
+    // Bottom-up, then radially outward: reads like a build crew working from the middle out.
+    for (const cell of cells) {
+      const dx = cell.x - centerX;
+      const dz = cell.z - centerZ;
+      cell.order = cell.y * 1_000_000 + dx * dx + dz * dz;
+    }
+    cells.sort((a, b) => a.order - b.order);
+    journal.reset(null);
+    for (const cell of cells) journal.record(cell.x, cell.y, cell.z, cell.key32, cell.shape);
   };
 
   const stepReplay = (now: number): void => {
     if (!replayRun) return;
     const run = replayRun;
-    const target = Math.min(
-      run.total,
-      replayedCountAt(now - run.startedAt, run.durationMs, run.total),
-    );
-    if (target > run.applied) {
-      applyJournalRange(run.applied, target, true);
+    const dt = Math.min(100, now - run.lastNow);
+    run.lastNow = now;
+
+    if (run.pendingSeek !== null) {
+      // Scrubbing: forward applies the delta, backward rebuilds from the baseline.
+      run.progressMs = run.pendingSeek * run.durationMs;
+      run.pendingSeek = null;
+      const target = replayedCountAt(run.progressMs, run.durationMs, run.total);
+      if (target >= run.applied) {
+        applyJournalRange(run.applied, target, false);
+      } else {
+        if (run.baselineSnapshot) world.loadSnapshot(run.baselineSnapshot);
+        else world.clear();
+        applyJournalRange(0, target, false);
+      }
       run.applied = target;
-      if (now - run.lastTickSoundAt >= 260 && target < run.total) {
-        run.lastTickSoundAt = now;
-        sound.play("tick", { pitch: target / run.total });
+    } else if (run.playing) {
+      run.progressMs = Math.min(run.durationMs, run.progressMs + dt * run.speed);
+      const target = replayedCountAt(run.progressMs, run.durationMs, run.total);
+      if (target > run.applied) {
+        applyJournalRange(run.applied, target, true);
+        run.applied = target;
+        if (now - run.lastTickSoundAt >= 260 && target < run.total) {
+          run.lastTickSoundAt = now;
+          sound.play("tick", { pitch: target / run.total });
+        }
       }
     }
-    const elapsedSec = (now - run.startedAt) / 1000;
-    orbitPoint(run.center, run.radius, run.angle0 + elapsedSec * 0.28, scratchOrbitPos);
+    run.transport.setProgress(run.durationMs <= 0 ? 1 : run.progressMs / run.durationMs);
+
+    // The orbit follows the timeline (scrubbing winds the camera); the entry blend is wall-clock.
+    orbitPoint(
+      run.center,
+      run.radius,
+      run.angle0 + (run.progressMs / 1000) * 0.28,
+      scratchOrbitPos,
+    );
     scratchOrbitTarget.set(run.center.x, run.center.y, run.center.z);
-    // Ease from wherever the player was into the orbit over the first ~0.9s.
-    const blendT = Math.min(1, elapsedSec / 0.9);
+    const sinceStartSec = (now - run.startedAt) / 1000;
+    const blendT = Math.min(1, sinceStartSec / 0.9);
     const blend = blendT * blendT * (3 - 2 * blendT);
     cameraRig.camera.position.lerpVectors(run.savedCameraPos, scratchOrbitPos, blend);
     cameraRig.controls.target.lerpVectors(run.savedTarget, scratchOrbitTarget, blend);
     cameraRig.camera.lookAt(cameraRig.controls.target);
-    if (run.applied >= run.total && now - run.startedAt >= run.durationMs) finishReplay(false);
+    if (run.playing && run.progressMs >= run.durationMs) finishReplay(false);
   };
 
   window.addEventListener("keydown", (event) => {
@@ -776,9 +896,11 @@ const boot = async (): Promise<void> => {
       if (!pick) return;
       leaveCollabRoom();
       sound.play("ui");
-      restoreSnapshot(decodeSnapshot(pick.data), true);
-      frameHero();
-      state.toast.set(`"${pick.entry.name}" loaded — remix away`);
+      const snapshot = decodeSnapshot(pick.data);
+      if (!restoreSnapshot(snapshot, true)) return; // dim change: page reboots into the scene
+      state.toast.set(`"${pick.entry.name}" — watch it come together`);
+      stageShowcase(snapshot);
+      beginReplay(true);
     },
     startReplay: () => beginReplay(),
   };
@@ -789,17 +911,22 @@ const boot = async (): Promise<void> => {
     saves.hold();
     world.loadSnapshot(plan.sharedBuild);
     undo.clear();
-    journal.reset(encodeSnapshot(plan.sharedBuild));
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
     state.toast.set("Shared build loaded — it's yours to remix");
+    stageShowcase(plan.sharedBuild);
+    beginReplay(true);
   } else if (plan.pendingWorld && (await saves.loadPending())) {
     state.toast.set("Loaded — remix away");
+    if (!plan.roomId) {
+      stageShowcase(world.toSnapshot());
+      beginReplay(true);
+    }
   } else if (!(await saves.loadAutosave()) && !plan.roomId) {
     buildStarter(world);
     journal.reset(encodeSnapshot(world.toSnapshot()));
   }
   if (plan.roomId) joinCollabRoom(plan.roomId);
-  frameHero();
+  if (!replayRun) frameHero();
 
   if (plan.attract) {
     attractActive = true;

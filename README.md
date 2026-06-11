@@ -1,58 +1,33 @@
 # buildingblock
 
-A fast voxel building sandbox that runs entirely in your browser. WebGPU-first rendering, real-time collaboration with zero servers, and worlds you can share as a single link.
+Voxel building sandbox in the browser. **[Try it](https://chh-ay.github.io/buildingblock/)** — no install, no account.
 
-**Build something → [chh-ay.github.io/buildingblock](https://chh-ay.github.io/buildingblock/)**
+![buildingblock](public/og.png)
 
-![buildingblock — voxel sandbox](public/og.png)
+Place, erase and paint blocks (cubes, slabs, ramps), drag out rectangles, undo freely. Every edit gets journaled, so you can hit Replay and watch your build reassemble itself brick by brick. When you like what you made, copy a build link — the whole world is gzipped into the URL itself, nothing gets uploaded anywhere. There's also a live mode: a Share link puts you and your friends in the same world over WebRTC, no server involved, with little colored cursors showing who's poking where.
 
-## What it does
-
-- **Place, erase, paint** — instant feedback on pointer-down, drag for rectangles, mouse-wheel box heights. Cubes, slabs, and ramps that auto-face away from the camera.
-- **Replay your build** — every edit is journaled; watch the whole thing reassemble brick-by-brick under an orbiting camera.
-- **Share as a link** — the entire world rides gzipped inside the URL fragment. No accounts, no uploads; whoever opens it can remix immediately.
-- **Build together** — zero-host P2P rooms over WebRTC (nostr signaling). Live peer cursors with derived names and colors, snapshot sync for late joiners.
-- **Gallery** — six curated dioramas, one click to load and remix:
+The Gallery has a few scenes to start from:
 
 | | | |
 |:---:|:---:|:---:|
 | ![Harbor Lighthouse](public/gallery/harbor-lighthouse.png) | ![Sky Temple](public/gallery/sky-temple.png) | ![Castle Keep](public/gallery/castle-keep.png) |
-| Harbor Lighthouse | Sky Temple | Castle Keep |
 | ![Sail Ship](public/gallery/sail-ship.png) | ![Winter Cabin](public/gallery/winter-cabin.png) | ![Neon Alley](public/gallery/neon-city.png) |
-| Sail Ship | Winter Cabin | Neon Alley |
 
-- **Day/night cycle** that follows your clock (or manual sun control), bloom, PCF shadows rendered on demand.
-- **Persistence** — IndexedDB autosave, named saves, `.bbk.gz` world files, MagicaVoxel `.vox` import/export, `.glb` mesh export, PNG screenshots.
-- Procedural sound effects and particle bursts, synthesized at runtime — zero audio assets.
+Other bits: a day/night cycle synced to your clock, IndexedDB autosave plus named saves, `.bbk.gz` world files, MagicaVoxel `.vox` in/out, `.glb` export, and tiny synthesized click sounds (no audio files, it's all oscillators).
 
-## Performance
-
-The renderer is WebGPU (`three/webgpu` + TSL node materials) with an automatic WebGL2 fallback. Geometry comes from a **binary greedy mesher**: bitmask set algebra over 32³ chunks with baked 3-neighbor ambient occlusion — roughly 0.02 ms per empty chunk, 0.55 ms per terrain chunk on a laptop core, scheduled across a worker pool with a synchronous fast path for single-block edits. Palette-compressed chunk storage (u8 → u16 spill), 11-byte network edit records, 2-u32 journal entries.
-
-`Settings → Perf HUD` shows fps, frame times, draw calls, triangles, remesh latency, and the active backend.
-
-## Development
+## Running it
 
 ```sh
 bun install
-bun run dev        # vite dev server
-bun run check      # tsc --noEmit
-bun run lint       # biome
-bun test           # bun:test suites
-bun run build      # production bundle
-bun run gallery    # rebuild public/gallery from scripts/gallery/scenes
+bun run dev
 ```
 
-Deployed to GitHub Pages by `.github/workflows/deploy.yml` on every push to `main` (lint → typecheck → test → build → deploy).
+`bun test`, `bun run check` (tsc) and `bun run lint` (biome) are the gates. `bun run gallery` rebuilds the bundled scenes from `scripts/gallery/scenes/`.
 
-## Architecture notes
+## How it's built
 
-- `src/core` — chunked voxel world, interned block states, DDA raycast, edit journal. Pure logic, no rendering.
-- `src/mesh` — greedy mesher + worker scheduler. The mesher is the hot path; everything is typed arrays.
-- `src/render` — three.js WebGPU renderer, TSL materials, environment, highlights, particles. three.js never leaks outside this directory (plus the glTF exporter).
-- `src/interact` — tools as pure gesture state machines; the input router owns the DOM.
-- `src/net` — trystero room wiring, peer identity derivation, 12-byte cursor records.
-- `src/io` — BBK binary codec, saves, share links, vox/glTF interchange.
-- `src/ui` — vanilla DOM + a 27-line signal store. No framework.
+Rendering is three.js WebGPU with TSL node materials, falling back to WebGL2 where WebGPU isn't available. Chunks are 32³ with palette-compressed storage; meshing is a binary greedy mesher (bitmask set algebra, baked ambient occlusion) that does a terrain chunk in about half a millisecond and runs in a worker pool, with a synchronous path so single-block edits never feel laggy. Shadows only re-render when something changes. The whole UI is vanilla DOM on top of a ~25-line signal store.
 
-Desktop and tablet only — it wants a pointer and a real GPU.
+Layout, roughly: `src/core` is the world and pure logic, `src/mesh` the mesher, `src/render` everything three.js touches, `src/interact` tools and input, `src/net` the P2P room, `src/io` codecs and saves, `src/ui` panels and menus. The perf HUD lives in Settings if you want to watch the numbers.
+
+Desktop and tablet only.
