@@ -1,12 +1,14 @@
 /** Composition root: world + scheduler + renderer + tools + UI, wired together. */
 import "./styles.css";
-import { Frustum, Group, Matrix4 } from "three";
+import { Frustum, Group, Matrix4, Vector3 } from "three";
+import { EditJournal, type JournalEntry, replayDurationMs, replayedCountAt } from "./core/journal";
 import {
   AIR,
   applyWorldDims,
   builtinClassTable,
   CHUNK_BITS,
   CHUNK_SIZE,
+  inWorld,
   type RayHit,
   SHAPE_RAMP_NX,
   SHAPE_RAMP_NZ,
@@ -27,11 +29,12 @@ import { VoxelWorld } from "./core/world";
 import type { ToolEnv } from "./interact/api";
 import { initInput } from "./interact/input";
 import { createSessionFactory } from "./interact/session";
-import { createTools } from "./interact/tools";
+import { adjacentCell, createTools } from "./interact/tools";
 import { type ApplyFn, UndoStack } from "./interact/undo";
 import { decodeSnapshot, encodeSnapshot } from "./io/codec";
 import { exportGlbFile } from "./io/gltf";
-import { peekAutosaveDims, SaveStore } from "./io/saves";
+import { peekBootWorld, SaveStore } from "./io/saves";
+import { buildShareUrl, fromBase64Url, parseAppHash } from "./io/share";
 import { RemeshScheduler } from "./mesh/scheduler";
 import { derivePeerIdentity } from "./net/identity";
 import { joinBuildRoom, type NetSession, type RemoteCell, randomRoomId } from "./net/room";
@@ -41,11 +44,14 @@ import { plasmaMaterialDef, registerBlockMaterial } from "./render/custom";
 import { createEnvironment } from "./render/env";
 import { Highlighter } from "./render/highlight";
 import { createGlassMaterial, createOpaqueMaterial } from "./render/materials";
+import { createVoxelFx } from "./render/particles";
 import { PostPipeline } from "./render/postfx";
 import { PresenceRenderer } from "./render/presence";
 import { createRenderCore, type SkyState } from "./render/renderer";
+import { createSound } from "./sound";
 import { buildStarter } from "./starter";
 import { type AppActions, createAppState, type ToolId } from "./state";
+import { openGallery as openGalleryModal } from "./ui/gallery";
 import { initUi } from "./ui/index";
 import { pickWorldSize } from "./ui/size-picker";
 
@@ -58,14 +64,49 @@ const showFatal = (message: string): void => {
 
 const SIZE_STORAGE_KEY = "bb-world-size";
 const RENDERER_STORAGE_KEY = "bb-renderer";
+const SOUND_STORAGE_KEY = "bb-sound";
+
+interface BootPlan {
+  /** First run: the world boots behind an attract-mode size picker. */
+  attract: boolean;
+  /** A parked world (gallery/share dim change) waits in the pending slot. */
+  pendingWorld: boolean;
+  /** Decoded #b= snapshot; dims already applied. */
+  sharedBuild: WorldSnapshot | null;
+  roomId: string | null;
+}
 
 /**
  * Fix the world dimensions before anything world-sized is constructed:
- * autosave dims win (so saved worlds reopen as-is), then the remembered
- * preset, then a first-run picker.
+ * a #b= share link wins (its snapshot carries dims), then a parked pending
+ * world, then the autosave, then the remembered preset. True first runs boot
+ * a medium world immediately and pick the size over a live attract scene.
  */
-const resolveWorldDims = async (): Promise<void> => {
-  const saved = await peekAutosaveDims();
+const resolveBootPlan = async (): Promise<BootPlan> => {
+  const hash = parseAppHash(window.location.hash);
+  if (!hash.room && hash.build) {
+    try {
+      let bytes = fromBase64Url(hash.build) as Uint8Array<ArrayBuffer>;
+      if (bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+        bytes = new Uint8Array(
+          await new Response(
+            new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip")),
+          ).arrayBuffer(),
+        );
+      }
+      const snapshot = decodeSnapshot(bytes);
+      applyWorldDims(
+        snapshot.sx >> CHUNK_BITS,
+        snapshot.sy >> CHUNK_BITS,
+        snapshot.sz >> CHUNK_BITS,
+      );
+      return { attract: false, pendingWorld: false, sharedBuild: snapshot, roomId: null };
+    } catch (error) {
+      console.warn("share link unreadable", error);
+    }
+  }
+  const roomId = hash.room;
+  const saved = await peekBootWorld();
   if (
     saved &&
     saved.sx % CHUNK_SIZE === 0 &&
@@ -73,16 +114,17 @@ const resolveWorldDims = async (): Promise<void> => {
     saved.sz % CHUNK_SIZE === 0
   ) {
     applyWorldDims(saved.sx >> CHUNK_BITS, saved.sy >> CHUNK_BITS, saved.sz >> CHUNK_BITS);
-    return;
+    return { attract: false, pendingWorld: saved.pending, sharedBuild: null, roomId };
   }
   const stored = WORLD_PRESETS.find((p) => p.id === localStorage.getItem(SIZE_STORAGE_KEY));
   if (stored) {
     applyWorldDims(stored.cx, stored.cy, stored.cz);
-    return;
+    return { attract: false, pendingWorld: false, sharedBuild: null, roomId };
   }
-  const chosen = (await pickWorldSize("medium", false)) ?? WORLD_PRESETS[1];
-  localStorage.setItem(SIZE_STORAGE_KEY, chosen.id);
-  applyWorldDims(chosen.cx, chosen.cy, chosen.cz);
+  const preset = WORLD_PRESETS[1];
+  applyWorldDims(preset.cx, preset.cy, preset.cz);
+  // Room links skip the picker (the room's world decides); everyone else gets attract mode.
+  return { attract: roomId === null, pendingWorld: false, sharedBuild: null, roomId };
 };
 
 const boot = async (): Promise<void> => {
@@ -99,11 +141,26 @@ const boot = async (): Promise<void> => {
   const state = createAppState();
   if ((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) state.hud.set(true);
 
-  await resolveWorldDims();
+  const plan = await resolveBootPlan();
   const worldOffsetX = WORLD_SX / 2;
   const worldOffsetZ = WORLD_SZ / 2;
   const world = new VoxelWorld();
   const undo = new UndoStack();
+
+  const journal = new EditJournal();
+  let journalTracking = true;
+  world.onEdit = (x, y, z, stateId) => {
+    if (!journalTracking) return;
+    journal.record(x, y, z, world.stateTable[stateId] ?? 0, world.stateShapes[stateId] ?? 0);
+  };
+
+  const soundEnabledAtBoot = localStorage.getItem(SOUND_STORAGE_KEY) !== "0";
+  state.sound.set(soundEnabledAtBoot);
+  const sound = createSound(soundEnabledAtBoot);
+  state.sound.sub((enabled) => {
+    sound.setEnabled(enabled);
+    localStorage.setItem(SOUND_STORAGE_KEY, enabled ? "1" : "0");
+  });
 
   const storedRenderer = localStorage.getItem(RENDERER_STORAGE_KEY);
   if (storedRenderer === "webgl" || storedRenderer === "webgpu") {
@@ -122,6 +179,8 @@ const boot = async (): Promise<void> => {
   const highlight = new Highlighter();
   const presence = new PresenceRenderer(presenceLayer);
   worldGroup.add(chunkRenderer.group, highlight.group, presence.group);
+  const fx = createVoxelFx();
+  worldGroup.add(fx.object);
   const environment = createEnvironment(scene);
 
   const workerCount = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 2));
@@ -141,27 +200,52 @@ const boot = async (): Promise<void> => {
     restore: (snapshot) => restoreSnapshot(snapshot),
   });
 
-  /** Whole-world replacement used by saves, imports, and collab snapshots. */
-  const restoreSnapshot = (snapshot: WorldSnapshot): void => {
+  /** Whole-world replacement used by saves, imports, gallery, and collab snapshots. */
+  const restoreSnapshot = (snapshot: WorldSnapshot, borrowed = false): void => {
     if (snapshot.sx !== WORLD_SX || snapshot.sy !== WORLD_SY || snapshot.sz !== WORLD_SZ) {
-      // Different world size: stash it as the autosave and reboot into those dims.
+      // Different world size: park it in the pending slot (autosave intact) and reboot into its dims.
       state.toast.set("World size differs — reloading");
-      void saves.stashAutosave(snapshot).then(() => window.location.reload());
+      void saves
+        .flush()
+        .then(() => saves.stashPending(snapshot))
+        .then(() => window.location.reload());
       return;
     }
+    if (borrowed) saves.hold();
     world.loadSnapshot(snapshot);
     undo.clear();
+    journal.reset(encodeSnapshot(snapshot));
   };
 
   // ── collaboration (zero-host WebRTC room; edits broadcast as packed keys) ──
   let net: NetSession | null = null;
+  /** Confetti on destruction, snap flash on creation/paint. Returns true when something spawned. */
+  const spawnEditFx = (
+    x: number,
+    y: number,
+    z: number,
+    prevId: number,
+    nextId: number,
+  ): boolean => {
+    if (nextId === AIR) {
+      if (prevId === AIR) return false;
+      fx.burst(x, y, z, stateRgb(world.stateTable[prevId] ?? 0));
+      return true;
+    }
+    fx.flash(x, y, z, stateRgb(world.stateTable[nextId] ?? 0));
+    return true;
+  };
+
   const applyRemoteEdits = (cells: RemoteCell[]): void => {
+    let fxBudget = 24;
     for (const cell of cells) {
       const stateId =
         cell.key === 0
           ? AIR
           : world.internState(stateClass(cell.key), stateRgb(cell.key), cell.shape);
-      world.set(cell.x, cell.y, cell.z, stateId);
+      const prevId = world.get(cell.x, cell.y, cell.z);
+      if (!world.set(cell.x, cell.y, cell.z, stateId)) continue;
+      if (fxBudget > 0 && spawnEditFx(cell.x, cell.y, cell.z, prevId, stateId)) fxBudget--;
     }
   };
   /** Roster → identities, markers, pill badges, and tab-title presence. */
@@ -182,7 +266,7 @@ const boot = async (): Promise<void> => {
     net = joinBuildRoom(roomId, {
       applyRemoteEdits,
       snapshotBytes: () => encodeSnapshot(world.toSnapshot()),
-      restoreSnapshot: (bytes) => restoreSnapshot(decodeSnapshot(bytes)),
+      restoreSnapshot: (bytes) => restoreSnapshot(decodeSnapshot(bytes), true),
       onRoster: syncRoster,
       onPeerCursor: (peerId, cursor) => presence.setCursor(peerId, cursor),
     });
@@ -240,15 +324,52 @@ const boot = async (): Promise<void> => {
     return dz >= 0 ? SHAPE_RAMP_PZ : SHAPE_RAMP_NZ;
   };
 
+  const sessionFactory = createSessionFactory(world, undo, (cells) =>
+    net?.broadcastEdits(cells, world.stateTable, world.stateShapes),
+  );
+  let lastEditSoundAt = 0;
   const toolEnv: ToolEnv = {
     world,
     state: () => world.internState(state.cls(), state.color(), shapeForPlacement()),
-    begin: createSessionFactory(world, undo, (cells) =>
-      net?.broadcastEdits(cells, world.stateTable, world.stateShapes),
-    ),
-    ghosts: (cells, count) => highlight.setGhosts(cells, count ?? (cells ? cells.length / 3 : 0)),
+    /** Sessions wrapped for juice: throttled edit sounds, particles, autosave release. */
+    begin: () => {
+      saves.release();
+      const session = sessionFactory();
+      let fxBudget = 48;
+      return {
+        get size() {
+          return session.size;
+        },
+        get: (x, y, z) => session.get(x, y, z),
+        set: (x, y, z, stateId) => {
+          const prevId = world.get(x, y, z);
+          if (!session.set(x, y, z, stateId)) return false;
+          if (fxBudget > 0 && spawnEditFx(x, y, z, prevId, stateId)) fxBudget--;
+          const now = performance.now();
+          if (now - lastEditSoundAt >= 50) {
+            lastEditSoundAt = now;
+            sound.play(stateId === AIR ? "erase" : state.tool() === "paint" ? "paint" : "place");
+          }
+          return true;
+        },
+        commit: () => session.commit(),
+        cancel: () => session.cancel(),
+      };
+    },
+    ghosts: (cells, count) =>
+      highlight.setGhosts(
+        cells,
+        count ?? (cells ? cells.length / 3 : 0),
+        state.tool() === "erase" ? 0xe0524d : state.color(),
+      ),
     hover: (hit) => {
-      highlight.setHover(hit);
+      const tool = state.tool();
+      let canPlace = false;
+      if (hit && (tool === "place" || tool === "box")) {
+        const [ax, ay, az] = adjacentCell(hit);
+        canPlace = inWorld(ax, ay, az) && world.get(ax, ay, az) === AIR;
+      }
+      highlight.setHover(hit, tool, state.color(), shapeForPlacement(), canPlace);
       sendPresenceCursor(hit);
     },
     pick: (stateId) => {
@@ -259,6 +380,7 @@ const boot = async (): Promise<void> => {
       state.cls.set(stateClass(key));
       const shape = world.stateShapes[stateId] ?? 0;
       state.shape.set(shape < 3 ? shape : 3);
+      sound.play("pick");
     },
   };
 
@@ -271,12 +393,17 @@ const boot = async (): Promise<void> => {
 
   /** Undo/redo wrapped so collab peers receive the reverted cells too. */
   const runUndoOperation = (operation: (apply: ApplyFn) => boolean): void => {
+    saves.release();
     const touched: number[] = [];
+    let fxBudget = 24;
     const apply: ApplyFn = (x, y, z, stateId) => {
+      const prevId = world.get(x, y, z);
       world.set(x, y, z, stateId);
+      if (fxBudget > 0 && spawnEditFx(x, y, z, prevId, stateId)) fxBudget--;
       if (net) touched.push(x, y, z, 0, stateId);
     };
     const changed = operation(apply);
+    if (changed) sound.play("ui");
     if (changed && net && touched.length > 0) {
       net.broadcastEdits(Int32Array.from(touched), world.stateTable, world.stateShapes);
     }
@@ -311,10 +438,8 @@ const boot = async (): Promise<void> => {
     lights.setCelestial(sky);
     environment.setSky(sky);
   };
-  /** Stylized clock → sky mapping (not an ephemeris): noon peaks at 62°; the moon mirrors the solar arc at night. */
-  const skyFromClock = (): SkyState => {
-    const now = new Date();
-    const dayFrac = (now.getHours() * 60 + now.getMinutes()) / 1440;
+  /** Stylized day-fraction → sky mapping (not an ephemeris): noon peaks at 62°; the moon mirrors the solar arc at night. */
+  const skyAtDayFrac = (dayFrac: number): SkyState => {
     const solarElevation = Math.sin((dayFrac - 0.25) * Math.PI * 2) * 62;
     const moon = solarElevation < 4;
     const bodyFrac = moon ? (dayFrac + 0.5) % 1 : dayFrac;
@@ -325,6 +450,10 @@ const boot = async (): Promise<void> => {
       moon,
       dayness: Math.min(1, Math.max(0, (solarElevation + 4) / 16)),
     };
+  };
+  const skyFromClock = (): SkyState => {
+    const now = new Date();
+    return skyAtDayFrac((now.getHours() * 60 + now.getMinutes()) / 1440);
   };
   const applyClockSky = (): void => {
     const sky = skyFromClock();
@@ -361,6 +490,203 @@ const boot = async (): Promise<void> => {
       applyManualSky();
     }
   });
+
+  // ── build replay: rebuild from the journal under an orbiting camera ──
+  const scratchOrbitPos = new Vector3();
+  const scratchOrbitTarget = new Vector3();
+  /**
+   * Camera position on an orbit that frames a bounding sphere of `radius` with
+   * the same fov-derived margin CameraRig.frame uses — the whole build stays in
+   * shot for the entire revolution.
+   */
+  const orbitPoint = (
+    center: { x: number; y: number; z: number },
+    radius: number,
+    angle: number,
+    out: Vector3,
+  ): Vector3 => {
+    const halfFov = (cameraRig.camera.fov * Math.PI) / 360;
+    const distance = Math.max(18, (radius / Math.tan(halfFov)) * 1.12);
+    const elevation = 0.58; // ~33° above the horizon
+    const horizontal = distance * Math.cos(elevation);
+    out.set(
+      center.x + Math.cos(angle) * horizontal,
+      center.y + distance * Math.sin(elevation),
+      center.z + Math.sin(angle) * horizontal,
+    );
+    return out;
+  };
+
+  /** Scene-space orbit pivot + radius for the current build (offset-corrected). */
+  const orbitFrame = (): { center: { x: number; y: number; z: number }; radius: number } => {
+    const bounds = world.contentBounds();
+    if (!bounds) {
+      return { center: { x: 0, y: 6, z: 0 }, radius: Math.max(WORLD_SX, WORLD_SZ) * 0.4 };
+    }
+    const { min, max } = bounds;
+    return {
+      center: {
+        x: (min[0] + max[0]) / 2 - worldOffsetX,
+        y: (min[1] + max[1]) / 2,
+        z: (min[2] + max[2]) / 2 - worldOffsetZ,
+      },
+      radius: Math.max(8, Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2),
+    };
+  };
+
+  /** Deterministic hero shot: frame the build from a fixed pleasant azimuth (boot, loads). */
+  const frameHero = (): void => {
+    const { center, radius } = orbitFrame();
+    orbitPoint(center, radius, -0.65, scratchOrbitPos);
+    cameraRig.controls.target.set(center.x, center.y, center.z);
+    cameraRig.camera.position.copy(scratchOrbitPos);
+    cameraRig.camera.lookAt(cameraRig.controls.target);
+  };
+
+  interface ReplayRun {
+    startedAt: number;
+    durationMs: number;
+    applied: number;
+    total: number;
+    statesBefore: number;
+    angle0: number;
+    center: { x: number; y: number; z: number };
+    radius: number;
+    lastTickSoundAt: number;
+    savedCameraPos: Vector3;
+    savedTarget: Vector3;
+    blocker: HTMLDivElement;
+    banner: HTMLDivElement;
+  }
+  let replayRun: ReplayRun | null = null;
+  const journalScratch: JournalEntry = { x: 0, y: 0, z: 0, key32: 0, shape: 0 };
+
+  const applyJournalRange = (from: number, to: number, flashes: boolean): void => {
+    for (let i = from; i < to; i++) {
+      const entry = journal.entryAt(i, journalScratch);
+      const stateId =
+        entry.key32 === 0
+          ? AIR
+          : world.internState(stateClass(entry.key32), stateRgb(entry.key32), entry.shape);
+      world.set(entry.x, entry.y, entry.z, stateId);
+      if (flashes && stateId !== AIR && i % 12 === 0) {
+        fx.flash(entry.x, entry.y, entry.z, stateRgb(entry.key32));
+      }
+    }
+  };
+
+  const finishReplay = (skipped: boolean): void => {
+    if (!replayRun) return;
+    applyJournalRange(replayRun.applied, replayRun.total, false);
+    journalTracking = true;
+    // Intern order is deterministic, so ids only diverge when states were interned but never
+    // written (preview-only); then the undo stack's ids are unsafe and it resets.
+    if (world.stateCount !== replayRun.statesBefore) undo.clear();
+    cameraRig.camera.position.copy(replayRun.savedCameraPos);
+    cameraRig.controls.target.copy(replayRun.savedTarget);
+    replayRun.blocker.remove();
+    replayRun.banner.remove();
+    replayRun = null;
+    state.replaying.set(false);
+    saves.release();
+    saves.autosaveSoon();
+    state.toast.set(skipped ? "Replay skipped" : "That's how it was built");
+  };
+
+  const beginReplay = (): void => {
+    if (replayRun) return;
+    if (net) {
+      state.toast.set("Replay is solo — leave the room first");
+      return;
+    }
+    if (journal.overflowed) {
+      state.toast.set("This session is too long to replay");
+      return;
+    }
+    if (journal.length < 8) {
+      state.toast.set("Build something first — replay shows your session");
+      return;
+    }
+    const { center, radius } = orbitFrame();
+    const blocker = document.createElement("div");
+    blocker.className = "input-blocker";
+    const banner = document.createElement("div");
+    banner.className = "replay-banner";
+    banner.textContent = "Replaying your build — Esc to skip";
+    document.body.append(blocker, banner);
+
+    replayRun = {
+      startedAt: performance.now(),
+      durationMs: replayDurationMs(journal.length),
+      applied: 0,
+      total: journal.length,
+      statesBefore: world.stateCount,
+      angle0: Math.atan2(
+        cameraRig.camera.position.z - center.z,
+        cameraRig.camera.position.x - center.x,
+      ),
+      center,
+      radius,
+      lastTickSoundAt: 0,
+      savedCameraPos: cameraRig.camera.position.clone(),
+      savedTarget: cameraRig.controls.target.clone(),
+      blocker,
+      banner,
+    };
+    state.replaying.set(true);
+    journalTracking = false;
+    saves.hold();
+    sound.play("ui");
+    if (journal.baseline) world.loadSnapshot(decodeSnapshot(journal.baseline));
+    else world.clear();
+  };
+
+  const stepReplay = (now: number): void => {
+    if (!replayRun) return;
+    const run = replayRun;
+    const target = Math.min(
+      run.total,
+      replayedCountAt(now - run.startedAt, run.durationMs, run.total),
+    );
+    if (target > run.applied) {
+      applyJournalRange(run.applied, target, true);
+      run.applied = target;
+      if (now - run.lastTickSoundAt >= 260 && target < run.total) {
+        run.lastTickSoundAt = now;
+        sound.play("tick", { pitch: target / run.total });
+      }
+    }
+    const elapsedSec = (now - run.startedAt) / 1000;
+    orbitPoint(run.center, run.radius, run.angle0 + elapsedSec * 0.28, scratchOrbitPos);
+    scratchOrbitTarget.set(run.center.x, run.center.y, run.center.z);
+    // Ease from wherever the player was into the orbit over the first ~0.9s.
+    const blendT = Math.min(1, elapsedSec / 0.9);
+    const blend = blendT * blendT * (3 - 2 * blendT);
+    cameraRig.camera.position.lerpVectors(run.savedCameraPos, scratchOrbitPos, blend);
+    cameraRig.controls.target.lerpVectors(run.savedTarget, scratchOrbitTarget, blend);
+    cameraRig.camera.lookAt(cameraRig.controls.target);
+    if (run.applied >= run.total && now - run.startedAt >= run.durationMs) finishReplay(false);
+  };
+
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && replayRun) finishReplay(true);
+  });
+
+  // ── attract mode: first-run diorama spins under the size picker ──
+  let attractActive = false;
+  let attractSkyAppliedAt = 0;
+  const stepAttract = (now: number): void => {
+    const { center, radius } = orbitFrame();
+    orbitPoint(center, radius, now * 0.00018, scratchOrbitPos);
+    cameraRig.controls.target.set(center.x, center.y, center.z);
+    cameraRig.camera.position.copy(scratchOrbitPos);
+    cameraRig.camera.lookAt(cameraRig.controls.target);
+    if (now - attractSkyAppliedAt >= 250) {
+      attractSkyAppliedAt = now;
+      // One stylized day every 150 seconds, starting at morning so the first minute stays bright.
+      applySky(skyAtDayFrac((0.32 + now / 150_000) % 1));
+    }
+  };
 
   const download = (data: Blob, filename: string): void => {
     const url = URL.createObjectURL(data);
@@ -428,13 +754,71 @@ const boot = async (): Promise<void> => {
       download(blob, `buildingblock-${Date.now()}.png`);
     },
     frameCamera: () => cameraRig.frame(contentBounds()),
+    shareBuildLink: async () => {
+      const bytes = encodeSnapshot(world.toSnapshot());
+      const gz = new Uint8Array(
+        await new Response(
+          new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip")),
+        ).arrayBuffer(),
+      );
+      const url = buildShareUrl(window.location.href, gz);
+      if (url === null) {
+        state.toast.set("Build too large for a link — Export → World instead");
+        return;
+      }
+      await navigator.clipboard.writeText(url);
+      state.toast.set("Build link copied — the whole world rides in the URL");
+    },
+    openGallery: async () => {
+      const baseUrl =
+        (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
+      const pick = await openGalleryModal(baseUrl);
+      if (!pick) return;
+      leaveCollabRoom();
+      sound.play("ui");
+      restoreSnapshot(decodeSnapshot(pick.data), true);
+      frameHero();
+      state.toast.set(`"${pick.entry.name}" loaded — remix away`);
+    },
+    startReplay: () => beginReplay(),
   };
   initUi(uiRoot, state, actions);
 
-  const roomFromHash = /^#r=([a-z0-9]{4,})$/.exec(window.location.hash)?.[1];
-  if (!(await saves.loadAutosave()) && !roomFromHash) buildStarter(world);
-  if (roomFromHash) joinCollabRoom(roomFromHash);
-  cameraRig.frame(contentBounds());
+  if (plan.sharedBuild) {
+    // Dims were applied pre-construction; load directly and keep it borrowed until edited.
+    saves.hold();
+    world.loadSnapshot(plan.sharedBuild);
+    undo.clear();
+    journal.reset(encodeSnapshot(plan.sharedBuild));
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    state.toast.set("Shared build loaded — it's yours to remix");
+  } else if (plan.pendingWorld && (await saves.loadPending())) {
+    state.toast.set("Loaded — remix away");
+  } else if (!(await saves.loadAutosave()) && !plan.roomId) {
+    buildStarter(world);
+    journal.reset(encodeSnapshot(world.toSnapshot()));
+  }
+  if (plan.roomId) joinCollabRoom(plan.roomId);
+  frameHero();
+
+  if (plan.attract) {
+    attractActive = true;
+    saves.hold();
+    uiRoot.style.display = "none";
+    void pickWorldSize("medium", false, true).then((preset) => {
+      const chosen = preset ?? WORLD_PRESETS[1];
+      localStorage.setItem(SIZE_STORAGE_KEY, chosen.id);
+      attractActive = false;
+      uiRoot.style.display = "";
+      if (chosen.cx !== WORLD_CX || chosen.cy !== WORLD_CY || chosen.cz !== WORLD_CZ) {
+        window.location.reload();
+        return;
+      }
+      applyClockSky();
+      frameHero();
+      sound.play("ui");
+    });
+  }
 
   const fitViewport = (): void => {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, state.dprCap()));
@@ -476,8 +860,11 @@ const boot = async (): Promise<void> => {
       const gap = tickStart - lastRenderAt;
       if (gap > worstGapMs) worstGapMs = gap;
       lastRenderAt = tickStart;
+      if (attractActive) stepAttract(tickStart);
+      if (replayRun) stepReplay(tickStart);
       cameraRig.update();
-      scheduler.flush(3);
+      scheduler.flush(replayRun ? 8 : 3);
+      if (fx.active()) fx.update(Math.min(gap, 100) / 1000);
       post.render();
       presence.updateLabels(
         cameraRig.camera,
@@ -540,6 +927,11 @@ const boot = async (): Promise<void> => {
       world.set(x, y, z, world.internState(cls, rgb)),
     voxels: () => world.voxelCount(),
     draws: () => renderer.info.render.drawCalls,
+    journal,
+    replay: () => beginReplay(),
+    rig: cameraRig,
+    attractOn: () => attractActive,
+    present: () => post.render(),
   };
 };
 

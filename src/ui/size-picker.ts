@@ -17,19 +17,22 @@ const formatPreset = (preset: WorldPreset): { dims: string; voxels: string } => 
 export const pickWorldSize = (
   recommendedId: string,
   cancellable: boolean,
+  attract = false,
 ): Promise<WorldPreset | null> => {
   const { promise, resolve } = Promise.withResolvers<WorldPreset | null>();
   const overlay = document.createElement("div");
-  overlay.className = "size-picker";
+  overlay.className = attract ? "size-picker attract" : "size-picker";
 
   const card = document.createElement("div");
   card.className = "size-card";
   overlay.appendChild(card);
 
   const title = document.createElement("h2");
-  title.textContent = "World size";
+  title.textContent = attract ? "Welcome to buildingblock" : "World size";
   const subtitle = document.createElement("p");
-  subtitle.textContent = "Pick the build area. Bigger worlds cost more memory and shadow detail.";
+  subtitle.textContent = attract
+    ? "A world is already spinning behind this card. Pick your build area and take over."
+    : "Pick the build area. Bigger worlds cost more memory and shadow detail.";
   card.append(title, subtitle);
 
   const finish = (preset: WorldPreset | null): void => {

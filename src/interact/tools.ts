@@ -6,7 +6,7 @@
 import type { RayHit } from "../core/types";
 import { AIR, FACE_NORMAL, inWorld, WORLD_SX, WORLD_SY, WORLD_SZ } from "../core/types";
 import type { ToolId } from "../state";
-import type { Ray, Tool, ToolEnv, ToolPointer } from "./api";
+import type { EditSession, Ray, Tool, ToolEnv, ToolPointer } from "./api";
 
 const DIM = Int32Array.of(WORLD_SX, WORLD_SY, WORLD_SZ);
 
@@ -48,6 +48,8 @@ interface RectOpts {
   wantAir: boolean;
   toAir: boolean;
   box: boolean;
+  /** Apply the anchor cell immediately on pointerdown (tap = instant block). */
+  instant: boolean;
 }
 
 /** Shared rect-drag gesture: place/erase/paint are one layer, box stacks h layers. */
@@ -58,6 +60,7 @@ const createRectTool = (opts: RectOpts): Tool => {
   let h = 1;
   let count = 0;
   let buf = new Int32Array(192);
+  let session: EditSession | null = null;
   const anchor = new Int32Array(3);
   const target: [number, number, number] = [0, 0, 0];
   const cell = new Int32Array(3);
@@ -122,6 +125,14 @@ const createRectTool = (opts: RectOpts): Tool => {
       target[1] = anchor[1];
       target[2] = anchor[2];
       active = true;
+      if (opts.instant) {
+        // Instant anchor: the first cell lands on pointerdown for tactile feedback;
+        // dragging extends the rect as a ghost preview committed on release.
+        session = env.begin();
+        const value = opts.toAir ? AIR : env.state();
+        const air = env.world.get(anchor[0], anchor[1], anchor[2]) === AIR;
+        if (air === opts.wantAir) session.set(anchor[0], anchor[1], anchor[2], value);
+      }
       env.hover(null);
       recompute(env);
     },
@@ -139,10 +150,11 @@ const createRectTool = (opts: RectOpts): Tool => {
       if (!active) return;
       active = false;
       const value = opts.toAir ? AIR : env.state();
-      const session = env.begin();
+      const gestureSession = session ?? env.begin();
+      session = null;
       const end = count * 3;
-      for (let i = 0; i < end; i += 3) session.set(buf[i], buf[i + 1], buf[i + 2], value);
-      session.commit();
+      for (let i = 0; i < end; i += 3) gestureSession.set(buf[i], buf[i + 1], buf[i + 2], value);
+      gestureSession.commit();
       env.ghosts(null);
       count = 0;
     },
@@ -156,6 +168,8 @@ const createRectTool = (opts: RectOpts): Tool => {
       if (!active) env.hover(p.hit);
     },
     cancel(env: ToolEnv): void {
+      session?.cancel();
+      session = null;
       active = false;
       count = 0;
       h = 1;
@@ -191,6 +205,7 @@ export const createTools = (): Record<ToolId, Tool> => ({
     wantAir: true,
     toAir: false,
     box: false,
+    instant: true,
   }),
   erase: createRectTool({
     adjacent: false,
@@ -198,6 +213,7 @@ export const createTools = (): Record<ToolId, Tool> => ({
     wantAir: false,
     toAir: true,
     box: false,
+    instant: true,
   }),
   paint: createRectTool({
     adjacent: false,
@@ -205,6 +221,7 @@ export const createTools = (): Record<ToolId, Tool> => ({
     wantAir: false,
     toAir: false,
     box: false,
+    instant: true,
   }),
   box: createRectTool({
     adjacent: true,
@@ -212,6 +229,7 @@ export const createTools = (): Record<ToolId, Tool> => ({
     wantAir: true,
     toAir: false,
     box: true,
+    instant: false,
   }),
   pick: createPickTool(),
 });

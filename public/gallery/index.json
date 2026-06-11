@@ -1,0 +1,68 @@
+[
+  {
+    "id": "harbor-lighthouse",
+    "name": "Harbor Lighthouse",
+    "blurb": "striped beacon over a rocky cove",
+    "voxels": 13441,
+    "sx": 96,
+    "sy": 64,
+    "sz": 96,
+    "bytes": 2680,
+    "thumb": "harbor-lighthouse.png"
+  },
+  {
+    "id": "sky-temple",
+    "name": "Sky Temple",
+    "blurb": "floating shrine above the clouds",
+    "voxels": 4836,
+    "sx": 96,
+    "sy": 64,
+    "sz": 96,
+    "bytes": 1595,
+    "thumb": "sky-temple.png"
+  },
+  {
+    "id": "castle-keep",
+    "name": "Castle Keep",
+    "blurb": "stone walls and banner-lined ramparts",
+    "voxels": 10413,
+    "sx": 96,
+    "sy": 64,
+    "sz": 96,
+    "bytes": 1866,
+    "thumb": "castle-keep.png"
+  },
+  {
+    "id": "sail-ship",
+    "name": "Sail Ship",
+    "blurb": "square-rigged sloop riding calm seas",
+    "voxels": 7744,
+    "sx": 96,
+    "sy": 64,
+    "sz": 96,
+    "bytes": 1096,
+    "thumb": "sail-ship.png"
+  },
+  {
+    "id": "winter-cabin",
+    "name": "Winter Cabin",
+    "blurb": "warm lights in fresh snow",
+    "voxels": 9603,
+    "sx": 96,
+    "sy": 64,
+    "sz": 96,
+    "bytes": 1845,
+    "thumb": "winter-cabin.png"
+  },
+  {
+    "id": "neon-city",
+    "name": "Neon Alley",
+    "blurb": "rain-slick block at midnight",
+    "voxels": 13761,
+    "sx": 96,
+    "sy": 64,
+    "sz": 96,
+    "bytes": 2484,
+    "thumb": "neon-city.png"
+  }
+]

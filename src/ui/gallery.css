@@ -1,0 +1,165 @@
+/* Featured-build gallery — dark frosted modal matching the size-picker / help overlays. */
+
+.gallery-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 8, 11, 0.72);
+  pointer-events: auto;
+}
+
+.gallery-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(80vh, 720px);
+  padding: 18px;
+  background: rgba(22, 22, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  color: #e8e8e4;
+}
+
+.gallery-head h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.gallery-hint {
+  color: #b8b8be;
+  font-size: 12px;
+  margin: 4px 0 0;
+}
+
+.gallery-body {
+  overflow-y: auto;
+  min-height: 60px;
+}
+
+.gallery-status {
+  color: #b8b8be;
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+
+.gallery-error {
+  color: #e08a8a;
+}
+
+.gallery-hidden {
+  display: none;
+}
+
+.gallery-close {
+  font: inherit;
+  color: #d8d8dc;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.gallery-close:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.gallery-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 10px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  color: #e8e8e4;
+  cursor: pointer;
+  font: inherit;
+  transition:
+    transform 0.12s ease,
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.gallery-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: #3fa7c4;
+  transform: translateY(-2px);
+}
+
+.gallery-item:focus-visible {
+  outline: none;
+  border-color: #3fa7c4;
+}
+
+.gallery-item:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.gallery-item strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gallery-blurb {
+  color: #b8b8be;
+  font-size: 11px;
+}
+
+.gallery-meta {
+  color: #8c8c92;
+  font-size: 11px;
+}
+
+.gallery-thumb {
+  aspect-ratio: 16 / 10;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.03);
+  margin-bottom: 4px;
+}
+
+.gallery-thumb img,
+.gallery-thumb-fallback {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.gallery-thumb-fallback {
+  background: linear-gradient(135deg, #1f2b3a 0%, #2a3d52 45%, #3fa7c4 130%);
+}
+
+/* Busy veil over the card being fetched. */
+.gallery-item.gallery-busy {
+  opacity: 1;
+}
+
+.gallery-item.gallery-busy::after {
+  content: "Loading…";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 8, 11, 0.6);
+  border-radius: 8px;
+  color: #e8e8e4;
+  font-size: 12px;
+}

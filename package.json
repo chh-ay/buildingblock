@@ -11,7 +11,8 @@
     "lint": "biome check src tests scripts",
     "lint:fix": "biome check --write src tests scripts",
     "test": "bun test",
-    "bench": "bun run scripts/bench.ts"
+    "bench": "bun run scripts/bench.ts",
+    "gallery": "bun run scripts/make-gallery.ts"
   },
   "dependencies": {
     "three": "^0.184.0",

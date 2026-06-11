@@ -30,6 +30,8 @@ export class VoxelWorld {
   stateShapes: number[] = [0];
   private stateMap = new Map<number, number>([[0, 0]]);
   onDirty: ((ci: number) => void) | null = null;
+  /** Per-voxel edit hook, fired after every successful set() (any source: tools, undo, network). */
+  onEdit: ((x: number, y: number, z: number, stateId: number) => void) | null = null;
 
   /** Number of distinct interned states (including air). */
   get stateCount(): number {
@@ -78,6 +80,7 @@ export class VoxelWorld {
     const lz = z & m;
     if (!chunk.setState(vIndex(lx, ly, lz), stateId)) return false;
     if (chunk.nonAir === 0) this.chunks[ci] = null;
+    this.onEdit?.(x, y, z, stateId);
     const onDirty = this.onDirty;
     if (!onDirty) return true;
     onDirty(ci);

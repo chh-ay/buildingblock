@@ -213,6 +213,12 @@ export const buildColorPanel = (state: AppState): HTMLElement => {
   });
 
   const recentsRow = el("div", { className: "recents-row" });
+  const recentsSection = el(
+    "div",
+    { className: "panel-section recents-section empty" },
+    el("div", { className: "section-label" }, "Recent"),
+    recentsRow,
+  );
   state.recents.sub((recents) => {
     recentsRow.textContent = "";
     for (const rgb of recents) {
@@ -221,7 +227,7 @@ export const buildColorPanel = (state: AppState): HTMLElement => {
       b.onclick = () => state.color.set(rgb);
       recentsRow.append(b);
     }
-    recentsRow.classList.toggle("empty", recents.length === 0);
+    recentsSection.classList.toggle("empty", recents.length === 0);
   });
 
   state.color.sub((rgb) => {
@@ -235,19 +241,24 @@ export const buildColorPanel = (state: AppState): HTMLElement => {
     }
     const hex = hexString(rgb);
     chip.style.background = hex;
-    const lum = 0.299 * ((rgb >>> 16) & 0xff) + 0.587 * ((rgb >>> 8) & 0xff) + 0.114 * (rgb & 0xff);
-    chip.style.color = lum > 140 ? "#1a1a1e" : "#f2f2f4";
-    chip.textContent = hex;
+    chip.title = `Color picker — ${hex}`;
     if (document.activeElement !== hexInput) hexInput.value = hex;
     markCurrent();
   });
 
+  const section = (label: string, ...children: HTMLElement[]): HTMLElement =>
+    el(
+      "div",
+      { className: "panel-section" },
+      el("div", { className: "section-label" }, label),
+      ...children,
+    );
+
   panel.append(
-    shapeRow,
-    classRow,
-    el("div", { className: "color-row" }, colorWrap, hexInput),
-    swatchGrid,
-    recentsRow,
+    section("Shape", shapeRow),
+    section("Material", classRow),
+    section("Color", el("div", { className: "color-row" }, colorWrap, hexInput), swatchGrid),
+    recentsSection,
   );
   return panel;
 };

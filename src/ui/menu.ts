@@ -103,39 +103,40 @@ const saveRow = (
   );
 };
 
-/** Builds the top-right menu area: peers pill + New, Save, Load, Export, Import, Share, Settings, Help. */
+/** Builds the top-right menu area: peers pill + File, Gallery, Share, Replay, Settings, Help. */
 export const buildMenu = (state: AppState, actions: AppActions, report: Report): HTMLElement => {
   const bar = el("div", { className: "panel menubar" });
 
-  const newBtn = armable("New", "New?", () => actions.newWorld());
-  newBtn.classList.add("menu-btn");
+  const fileSection = (label: string, ...children: (HTMLElement | string)[]): HTMLElement =>
+    el(
+      "div",
+      { className: "file-section" },
+      el("div", { className: "section-label" }, label),
+      ...children,
+    );
 
+  // World: two-step new-world confirm.
+  const newBtn = armable("New world…", "Erase and start over?", () => {
+    closePopovers();
+    actions.newWorld();
+  });
+  newBtn.classList.add("pop-item");
+
+  // Save: inline name + confirm.
   const nameInput = el("input", { type: "text", placeholder: "world name", value: "world" });
-  const savePop = el("div", { className: "pop menu-pop save-pop" });
-  const save = menuItem("Save", savePop);
-  const okBtn = el("button", { type: "button", className: "accent" }, "OK");
+  const okBtn = el("button", { type: "button", className: "accent" }, "Save");
   okBtn.onclick = () => {
     const name = nameInput.value.trim();
     if (!name) return;
     closePopovers();
     actions.save(name).catch(report);
   };
-  const cancelBtn = el("button", { type: "button" }, "Cancel");
-  cancelBtn.onclick = closePopovers;
   nameInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") okBtn.click();
   });
-  savePop.append(nameInput, el("div", { className: "pop-actions" }, okBtn, cancelBtn));
-  save.btn.onclick = () => {
-    if (togglePopover(save.wrap, savePop)) {
-      nameInput.focus();
-      nameInput.select();
-    }
-  };
 
+  // Saved worlds list, refreshed when the File panel opens.
   const list = el("div", { className: "save-list" });
-  const loadPop = el("div", { className: "pop menu-pop load-pop" }, list);
-  const load = menuItem("Load", loadPop);
   const refresh = (): void => {
     list.textContent = "";
     list.append(el("div", { className: "pop-note" }, "Loading…"));
@@ -151,37 +152,46 @@ export const buildMenu = (state: AppState, actions: AppActions, report: Report):
       })
       .catch(report);
   };
-  load.btn.onclick = () => {
-    if (togglePopover(load.wrap, loadPop)) refresh();
-  };
 
-  const exportPop = el("div", { className: "pop menu-pop export-pop" });
-  const exp = menuItem("Export", exportPop);
-  const exportItems: readonly { label: string; run: () => Promise<void> }[] = [
-    { label: "World (.bbk.gz)", run: () => actions.exportFile() },
-    { label: "MagicaVoxel (.vox)", run: () => actions.exportVox() },
-    { label: "Mesh (.glb)", run: () => actions.exportGlb() },
-    { label: "Screenshot (.png)", run: () => actions.screenshot() },
-  ];
-  for (const item of exportItems) {
-    const b = el("button", { type: "button", className: "pop-item" }, item.label);
-    b.onclick = () => {
-      closePopovers();
-      item.run().catch(report);
-    };
-    exportPop.append(b);
-  }
-
+  // Import / export.
   const fileInput = el("input", { type: "file", accept: ".bbk,.gz,.vox", className: "file-input" });
   fileInput.onchange = () => {
     const file = fileInput.files?.[0];
     if (file) actions.importFile(file).catch(report);
     fileInput.value = "";
   };
-  const importBtn = el("button", { type: "button", className: "menu-btn" }, "Import");
+  const importBtn = el("button", { type: "button", className: "pop-item" }, "Import file…");
   importBtn.onclick = () => {
     closePopovers();
     fileInput.click();
+  };
+  const exportItems: readonly { label: string; run: () => Promise<void> }[] = [
+    { label: ".bbk.gz", run: () => actions.exportFile() },
+    { label: ".vox", run: () => actions.exportVox() },
+    { label: ".glb", run: () => actions.exportGlb() },
+    { label: "PNG", run: () => actions.screenshot() },
+  ];
+  const exportRow = el("div", { className: "export-row" });
+  for (const item of exportItems) {
+    const b = el("button", { type: "button" }, item.label);
+    b.onclick = () => {
+      closePopovers();
+      item.run().catch(report);
+    };
+    exportRow.append(b);
+  }
+
+  const filePop = el(
+    "div",
+    { className: "pop menu-pop file-pop" },
+    fileSection("World", newBtn),
+    fileSection("Save as", el("div", { className: "save-as-row" }, nameInput, okBtn)),
+    fileSection("Saved worlds", list),
+    fileSection("Import / Export", importBtn, exportRow),
+  );
+  const file = menuItem("File", filePop);
+  file.btn.onclick = () => {
+    if (togglePopover(file.wrap, filePop)) refresh();
   };
 
   const settingsPop = el(
@@ -191,6 +201,7 @@ export const buildMenu = (state: AppState, actions: AppActions, report: Report):
     checkRow("Shadows", state.shadows),
     checkRow("Bloom", state.bloom),
     checkRow("Perf HUD", state.hud),
+    checkRow("Sound", state.sound),
     selectRow("Pixel ratio cap", state.dprCap, [1, 1.5, 2]),
     choiceRow("Shadow quality", state.shadowRes, [
       { value: 1024, label: "Low" },
@@ -217,10 +228,45 @@ export const buildMenu = (state: AppState, actions: AppActions, report: Report):
   );
   const settings = menuItem("Settings", settingsPop);
 
-  const shareBtn = el("button", { type: "button", className: "menu-btn" }, "Share");
-  shareBtn.onclick = () => {
+  const sharePop = el("div", { className: "pop menu-pop share-pop" });
+  const share = menuItem("Share", sharePop);
+  share.btn.classList.add("menu-cta");
+  const shareItems: readonly { label: string; hint: string; run: () => Promise<void> }[] = [
+    {
+      label: "Build together",
+      hint: "live room — friends join this world",
+      run: () => actions.share(),
+    },
+    {
+      label: "Copy build link",
+      hint: "snapshot — the world travels in the URL",
+      run: () => actions.shareBuildLink(),
+    },
+  ];
+  for (const item of shareItems) {
+    const button = el(
+      "button",
+      { type: "button", className: "pop-item share-item" },
+      el("strong", {}, item.label),
+      el("span", {}, item.hint),
+    );
+    button.onclick = () => {
+      closePopovers();
+      item.run().catch(report);
+    };
+    sharePop.append(button);
+  }
+
+  const galleryBtn = el("button", { type: "button", className: "menu-btn" }, "Gallery");
+  galleryBtn.onclick = () => {
     closePopovers();
-    actions.share().catch(report);
+    actions.openGallery().catch(report);
+  };
+
+  const replayBtn = el("button", { type: "button", className: "menu-btn" }, "Replay");
+  replayBtn.onclick = () => {
+    closePopovers();
+    actions.startReplay();
   };
 
   const helpBtn = el("button", { type: "button", className: "menu-btn" }, "Help");
@@ -229,17 +275,7 @@ export const buildMenu = (state: AppState, actions: AppActions, report: Report):
     state.helpOpen.set(!state.helpOpen());
   };
 
-  bar.append(
-    newBtn,
-    save.wrap,
-    load.wrap,
-    exp.wrap,
-    importBtn,
-    fileInput,
-    shareBtn,
-    settings.wrap,
-    helpBtn,
-  );
+  bar.append(file.wrap, fileInput, galleryBtn, share.wrap, replayBtn, settings.wrap, helpBtn);
 
   const pill = el("div", { className: "peers-pill hidden" });
   const renderPill = (): void => {

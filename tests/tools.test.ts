@@ -136,23 +136,19 @@ describe("rayPlaneCell", () => {
 });
 
 describe("place", () => {
-  test("ground drag previews the AIR rect and commits it once", () => {
+  test("tap lands the anchor instantly; drag previews the rest and commits once", () => {
     const f = makeEnv(7);
     f.cells.set(key(3, 0, 3), 9);
     const tool = createTools().place;
     tool.down({ ray: downRayAt(2, 2), hit: groundHit(2, 2) }, f.env);
     expect(f.hovers.at(-1)).toBeNull();
-    expect(cellSet(f.ghostCalls.at(-1) ?? null)).toEqual(new Set(["2,0,2"]));
+    expect(f.sets).toEqual([[2, 0, 2, 7]]); // instant anchor: the real block is the feedback
+    expect(cellSet(f.ghostCalls.at(-1) ?? null)).toEqual(new Set());
     tool.move({ ray: downRayAt(5, 4), hit: null }, f.env);
     const ghost = cellSet(f.ghostCalls.at(-1) ?? null);
-    expect(ghost.size).toBe(11);
+    expect(ghost.size).toBe(10); // 4x3 rect minus the applied anchor minus occupied (3,0,3)
+    expect(ghost.has("2,0,2")).toBe(false);
     expect(ghost.has("3,0,3")).toBe(false);
-    for (let x = 2; x <= 5; x++) {
-      for (let z = 2; z <= 4; z++) {
-        if (x === 3 && z === 3) continue;
-        expect(ghost.has(`${x},0,${z}`)).toBe(true);
-      }
-    }
     tool.up({ ray: downRayAt(5, 4), hit: null }, f.env);
     expect(f.counters).toEqual({ begins: 1, commits: 1, cancels: 0 });
     expect(f.sets.length).toBe(11);
@@ -161,14 +157,16 @@ describe("place", () => {
     expect(f.ghostCalls.at(-1)).toBeNull();
   });
 
-  test("cancel clears ghosts and aborts the gesture", () => {
+  test("cancel reverts the instant anchor and aborts the gesture", () => {
     const f = makeEnv();
     const tool = createTools().place;
     tool.down({ ray: downRayAt(2, 2), hit: groundHit(2, 2) }, f.env);
+    expect(f.counters.begins).toBe(1);
     tool.cancel(f.env);
     expect(f.ghostCalls.at(-1)).toBeNull();
+    expect(f.counters).toEqual({ begins: 1, commits: 0, cancels: 1 });
     tool.up({ ray: downRayAt(2, 2), hit: null }, f.env);
-    expect(f.counters.begins).toBe(0);
+    expect(f.counters.commits).toBe(0);
   });
 });
 
@@ -178,9 +176,11 @@ describe("erase", () => {
     for (let x = 10; x <= 12; x++) for (let z = 10; z <= 12; z++) f.cells.set(key(x, 0, z), 5);
     const tool = createTools().erase;
     tool.down({ ray: downRayAt(10, 10), hit: voxelHit(10, 0, 10, 2) }, f.env);
+    expect(f.sets).toEqual([[10, 0, 10, AIR]]); // anchor erased instantly
     tool.move({ ray: downRayAt(13, 13), hit: null }, f.env);
     const ghost = cellSet(f.ghostCalls.at(-1) ?? null);
-    expect(ghost.size).toBe(9);
+    expect(ghost.size).toBe(8); // remaining slab cells; the erased anchor is already air
+    expect(ghost.has("10,0,10")).toBe(false);
     expect(ghost.has("13,0,13")).toBe(false);
     tool.up({ ray: downRayAt(13, 13), hit: null }, f.env);
     expect(f.sets.length).toBe(9);
@@ -205,13 +205,17 @@ describe("paint", () => {
     f.cells.set(key(22, 0, 22), 5);
     const tool = createTools().paint;
     tool.down({ ray: downRayAt(20, 20), hit: voxelHit(20, 0, 20, 2) }, f.env);
+    expect(f.sets).toEqual([[20, 0, 20, 33]]); // anchor repainted instantly
     tool.move({ ray: downRayAt(22, 22), hit: null }, f.env);
     expect(cellSet(f.ghostCalls.at(-1) ?? null)).toEqual(new Set(["20,0,20", "22,0,22"]));
     tool.up({ ray: downRayAt(22, 22), hit: null }, f.env);
+    // The anchor reappears in the commit pass; the real world no-ops unchanged writes.
     expect(f.sets).toEqual([
+      [20, 0, 20, 33],
       [20, 0, 20, 33],
       [22, 0, 22, 33],
     ]);
+    expect(f.cells.get(key(21, 0, 21))).toBeUndefined();
     expect(f.counters.commits).toBe(1);
   });
 });
@@ -268,6 +272,17 @@ describe("box", () => {
     tool.cancel(f.env);
     expect(tool.wheel(-100, f.env)).toBe(false);
   });
+
+  test("box applies nothing until release", () => {
+    const f = makeEnv(7);
+    const tool = createTools().box;
+    tool.down({ ray: downRayAt(4, 4), hit: groundHit(4, 4) }, f.env);
+    expect(f.sets.length).toBe(0);
+    expect(f.counters.begins).toBe(0);
+    tool.up({ ray: downRayAt(4, 4), hit: null }, f.env);
+    expect(f.sets).toEqual([[4, 0, 4, 7]]);
+    expect(f.counters).toEqual({ begins: 1, commits: 1, cancels: 0 });
+  });
 });
 
 describe("clamping", () => {
@@ -276,7 +291,9 @@ describe("clamping", () => {
     const tool = createTools().place;
     tool.down({ ray: downRayAt(0, 0), hit: groundHit(0, 0) }, f.env);
     tool.move({ ray: downRayAt(-3, -2), hit: null }, f.env);
-    expect(cellSet(f.ghostCalls.at(-1) ?? null)).toEqual(new Set(["0,0,0"]));
+    // Rect collapses onto the already-applied anchor; the clamp keeps the loop in bounds.
+    expect(cellSet(f.ghostCalls.at(-1) ?? null)).toEqual(new Set());
+    expect(f.sets).toEqual([[0, 0, 0, 7]]);
   });
 });
 

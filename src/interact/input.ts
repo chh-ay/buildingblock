@@ -120,6 +120,8 @@ export const initInput = (deps: InputDeps): void => {
     gesture.up(pointerOf(e), env);
     gesture = null;
     afterCommit();
+    // Re-pick after the edit landed so the hover preview tracks the new surface immediately.
+    currentTool().hover(pointerOf(e), env);
   });
 
   canvas.addEventListener("pointercancel", () => {

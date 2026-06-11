@@ -113,6 +113,10 @@ export interface AppState {
   roster: Signal<readonly PeerBadge[]>;
   /** Transient status line; UI shows and auto-clears it. '' = none. */
   toast: Signal<string>;
+  /** Gameplay sound effects toggle (persisted). */
+  sound: Signal<boolean>;
+  /** True while a build replay is running; input is blocked and a banner shows. */
+  replaying: Signal<boolean>;
 }
 
 export const DEFAULT_SWATCHES: readonly number[] = [
@@ -149,6 +153,8 @@ export const createAppState = (): AppState => ({
   peers: signal(-1),
   roster: signal<readonly PeerBadge[]>([]),
   toast: signal(""),
+  sound: signal(true),
+  replaying: signal(false),
 });
 
 export interface SaveMeta {
@@ -174,4 +180,10 @@ export interface AppActions {
   exportGlb(): Promise<void>;
   screenshot(): Promise<void>;
   frameCamera(): void;
+  /** Copy a standalone link that encodes the whole build into the URL. */
+  shareBuildLink(): Promise<void>;
+  /** Browse featured scenes and load one. */
+  openGallery(): Promise<void>;
+  /** Rebuild the world brick-by-brick from the session journal. */
+  startReplay(): void;
 }

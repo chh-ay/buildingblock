@@ -9,6 +9,9 @@ import { exportVox, importVox } from "./vox";
 /** Reserved record name used by the rolling autosave slot. */
 export const AUTOSAVE_NAME = "__auto";
 
+/** Reserved record name parking a borrowed world (gallery scene / shared build) across a dim-change reload. */
+export const PENDING_NAME = "__pending";
+
 const AUTOSAVE_DELAY_MS = 1500;
 
 interface SaveHooks {
@@ -40,16 +43,25 @@ const download = (bytes: Uint8Array<ArrayBuffer> | ArrayBuffer, filename: string
 const asciiTag = (bytes: Uint8Array): string =>
   String.fromCharCode(bytes[0] ?? 0, bytes[1] ?? 0, bytes[2] ?? 0, bytes[3] ?? 0);
 
-/** Reads just the world dims from the autosave slot's BBK header, before any construction. */
-export const peekAutosaveDims = async (): Promise<{
+/** Boot peek: a pending parked world wins over the autosave slot; dims read before any construction. */
+export const peekBootWorld = async (): Promise<{
   sx: number;
   sy: number;
   sz: number;
+  pending: boolean;
 } | null> => {
   try {
-    const rec = await idbGet(await openSavesDb(), AUTOSAVE_NAME);
+    const db = await openSavesDb();
+    const parked = await idbGet(db, PENDING_NAME);
+    if (parked) {
+      const dims = peekDims(new Uint8Array(parked.data));
+      if (dims) return { ...dims, pending: true };
+      await idbDelete(db, PENDING_NAME);
+    }
+    const rec = await idbGet(db, AUTOSAVE_NAME);
     if (!rec) return null;
-    return peekDims(new Uint8Array(rec.data));
+    const dims = peekDims(new Uint8Array(rec.data));
+    return dims ? { ...dims, pending: false } : null;
   } catch {
     return null;
   }
@@ -60,6 +72,8 @@ export class SaveStore {
   private readonly hooks: SaveHooks;
   private dbPromise: Promise<IDBDatabase> | undefined;
   private autosaveTimer: ReturnType<typeof setTimeout> | undefined;
+  /** While held, autosaves are suppressed: the world on screen is borrowed until the user edits. */
+  private held = false;
 
   constructor(hooks: SaveHooks) {
     this.hooks = hooks;
@@ -74,6 +88,7 @@ export class SaveStore {
   }
 
   private async writeAutosave(): Promise<void> {
+    if (this.held) return;
     try {
       const data = toArrayBuffer(encodeSnapshot(this.hooks.snapshot()));
       await idbPut(await this.db(), { name: AUTOSAVE_NAME, updatedAt: Date.now(), data });
@@ -84,6 +99,7 @@ export class SaveStore {
 
   /** Schedule a trailing-debounced autosave; never throws into edit paths. */
   autosaveSoon(): void {
+    if (this.held) return;
     if (this.autosaveTimer !== undefined) clearTimeout(this.autosaveTimer);
     this.autosaveTimer = setTimeout(() => {
       this.autosaveTimer = undefined;
@@ -91,12 +107,13 @@ export class SaveStore {
     }, AUTOSAVE_DELAY_MS);
   }
 
-  /** Cancel any pending autosave timer and write the autosave slot now. */
+  /** Cancel any pending autosave timer and write the autosave slot now (no-op while held). */
   flush(): Promise<void> {
     if (this.autosaveTimer !== undefined) {
       clearTimeout(this.autosaveTimer);
       this.autosaveTimer = undefined;
     }
+    if (this.held) return Promise.resolve();
     return this.writeAutosave();
   }
 
@@ -108,30 +125,54 @@ export class SaveStore {
     return true;
   }
 
-  /** Overwrite the autosave slot with an explicit snapshot (world-size restarts). */
-  async stashAutosave(snapshot: WorldSnapshot): Promise<void> {
+  /** Park a snapshot for a dim-change reload; the autosave slot stays intact. */
+  async stashPending(snapshot: WorldSnapshot): Promise<void> {
+    const data = toArrayBuffer(encodeSnapshot(snapshot));
+    await idbPut(await this.db(), { name: PENDING_NAME, updatedAt: Date.now(), data });
+  }
+
+  /** Restore and consume the parked world; holds autosaves so it stays borrowed. */
+  async loadPending(): Promise<boolean> {
+    const db = await this.db();
+    const rec = await idbGet(db, PENDING_NAME);
+    if (!rec) return false;
+    await idbDelete(db, PENDING_NAME);
+    this.held = true;
+    this.hooks.restore(decodeSnapshot(new Uint8Array(rec.data)));
+    return true;
+  }
+
+  /** Suppress autosaves while showing a borrowed world (gallery scene, shared build, collab join). */
+  hold(): void {
+    this.held = true;
     if (this.autosaveTimer !== undefined) {
       clearTimeout(this.autosaveTimer);
       this.autosaveTimer = undefined;
     }
-    const data = toArrayBuffer(encodeSnapshot(snapshot));
-    await idbPut(await this.db(), { name: AUTOSAVE_NAME, updatedAt: Date.now(), data });
   }
 
-  /** Drop the autosave slot (fresh world flows). */
+  /** Resume autosaves; the next edit persists the world as the user's own. */
+  release(): void {
+    this.held = false;
+  }
+
+  /** Drop the autosave and any parked world (fresh-world flows); autosaves resume. */
   async clearAutosave(): Promise<void> {
     if (this.autosaveTimer !== undefined) {
       clearTimeout(this.autosaveTimer);
       this.autosaveTimer = undefined;
     }
-    await idbDelete(await this.db(), AUTOSAVE_NAME);
+    this.held = false;
+    const db = await this.db();
+    await idbDelete(db, AUTOSAVE_NAME);
+    await idbDelete(db, PENDING_NAME);
   }
 
   /** Persist the current world under a user-chosen name. */
   async saveAs(name: string): Promise<void> {
     const trimmed = name.trim();
     if (trimmed === "") throw new Error("save name must not be empty");
-    if (trimmed === AUTOSAVE_NAME) throw new Error(`'${AUTOSAVE_NAME}' is reserved for autosave`);
+    if (trimmed.startsWith("__")) throw new Error("names starting with '__' are reserved");
     const data = toArrayBuffer(encodeSnapshot(this.hooks.snapshot()));
     await idbPut(await this.db(), { name: trimmed, updatedAt: Date.now(), data });
   }
@@ -140,7 +181,7 @@ export class SaveStore {
   async list(): Promise<SaveMeta[]> {
     const recs = await idbAll(await this.db());
     return recs
-      .filter((r) => r.name !== AUTOSAVE_NAME)
+      .filter((r) => !r.name.startsWith("__"))
       .map((r) => ({ name: r.name, updatedAt: r.updatedAt, bytes: r.data.byteLength }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
