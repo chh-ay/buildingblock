@@ -7,6 +7,7 @@ import {
   builtinClassTable,
   CHUNK_BITS,
   CHUNK_SIZE,
+  type RayHit,
   SHAPE_RAMP_NX,
   SHAPE_RAMP_NZ,
   SHAPE_RAMP_PX,
@@ -32,6 +33,7 @@ import { decodeSnapshot, encodeSnapshot } from "./io/codec";
 import { exportGlbFile } from "./io/gltf";
 import { peekAutosaveDims, SaveStore } from "./io/saves";
 import { RemeshScheduler } from "./mesh/scheduler";
+import { derivePeerIdentity } from "./net/identity";
 import { joinBuildRoom, type NetSession, type RemoteCell, randomRoomId } from "./net/room";
 import { CameraRig } from "./render/camera";
 import { ChunkRenderer } from "./render/chunks";
@@ -40,9 +42,10 @@ import { createEnvironment } from "./render/env";
 import { Highlighter } from "./render/highlight";
 import { createGlassMaterial, createOpaqueMaterial } from "./render/materials";
 import { PostPipeline } from "./render/postfx";
+import { PresenceRenderer } from "./render/presence";
 import { createRenderCore, type SkyState } from "./render/renderer";
 import { buildStarter } from "./starter";
-import { type AppActions, createAppState } from "./state";
+import { type AppActions, createAppState, type ToolId } from "./state";
 import { initUi } from "./ui/index";
 import { pickWorldSize } from "./ui/size-picker";
 
@@ -87,6 +90,9 @@ const boot = async (): Promise<void> => {
   if (!app) throw new Error("missing #app element");
   const canvas = document.createElement("canvas");
   app.appendChild(canvas);
+  const presenceLayer = document.createElement("div");
+  presenceLayer.className = "presence-layer";
+  app.appendChild(presenceLayer);
   const uiRoot = document.createElement("div");
   app.appendChild(uiRoot);
 
@@ -114,7 +120,8 @@ const boot = async (): Promise<void> => {
 
   const chunkRenderer = new ChunkRenderer([createOpaqueMaterial(), createGlassMaterial()]);
   const highlight = new Highlighter();
-  worldGroup.add(chunkRenderer.group, highlight.group);
+  const presence = new PresenceRenderer(presenceLayer);
+  worldGroup.add(chunkRenderer.group, highlight.group, presence.group);
   const environment = createEnvironment(scene);
 
   const workerCount = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 2));
@@ -157,13 +164,27 @@ const boot = async (): Promise<void> => {
       world.set(cell.x, cell.y, cell.z, stateId);
     }
   };
+  /** Roster → identities, markers, pill badges, and tab-title presence. */
+  const syncRoster = (peerIds: readonly string[]): void => {
+    state.peers.set(net ? peerIds.length : -1);
+    const badges = peerIds.map((id) => {
+      const identity = derivePeerIdentity(id);
+      presence.upsertPeer(id, identity.name, identity.cssColor, identity.hexColor);
+      return { id, name: identity.name, color: identity.cssColor };
+    });
+    presence.pruneTo(peerIds);
+    state.roster.set(badges);
+    document.title =
+      peerIds.length > 0 ? `buildingblock — ${peerIds.length + 1} building` : "buildingblock";
+  };
   const joinCollabRoom = (roomId: string): void => {
     if (net) return;
     net = joinBuildRoom(roomId, {
       applyRemoteEdits,
       snapshotBytes: () => encodeSnapshot(world.toSnapshot()),
       restoreSnapshot: (bytes) => restoreSnapshot(decodeSnapshot(bytes)),
-      onPeers: (count) => state.peers.set(count),
+      onRoster: syncRoster,
+      onPeerCursor: (peerId, cursor) => presence.setCursor(peerId, cursor),
     });
     state.peers.set(0);
   };
@@ -171,8 +192,38 @@ const boot = async (): Promise<void> => {
     if (!net) return;
     net.leave();
     net = null;
+    presence.clear();
+    state.roster.set([]);
     state.peers.set(-1);
+    document.title = "buildingblock";
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  };
+
+  // Hover presence: throttled cursor broadcasts (12-byte records), trailing hide on null.
+  const TOOL_WIRE_IDS: Record<ToolId, number> = { place: 0, erase: 1, paint: 2, box: 3, pick: 4 };
+  let lastCursorSentAt = 0;
+  let cursorVisibleRemotely = false;
+  const sendPresenceCursor = (hit: RayHit | null): void => {
+    if (!net) return;
+    if (hit === null) {
+      if (cursorVisibleRemotely) {
+        net.sendCursor(null);
+        cursorVisibleRemotely = false;
+      }
+      return;
+    }
+    const now = performance.now();
+    if (now - lastCursorSentAt < 80) return;
+    lastCursorSentAt = now;
+    cursorVisibleRemotely = true;
+    net.sendCursor({
+      x: hit.x,
+      y: hit.ground ? 0 : hit.y,
+      z: hit.z,
+      face: hit.face,
+      tool: TOOL_WIRE_IDS[state.tool()],
+      color: state.color(),
+    });
   };
   world.onDirty = (ci) => {
     scheduler.markDirty(ci);
@@ -196,7 +247,10 @@ const boot = async (): Promise<void> => {
       net?.broadcastEdits(cells, world.stateTable, world.stateShapes),
     ),
     ghosts: (cells, count) => highlight.setGhosts(cells, count ?? (cells ? cells.length / 3 : 0)),
-    hover: (hit) => highlight.setHover(hit),
+    hover: (hit) => {
+      highlight.setHover(hit);
+      sendPresenceCursor(hit);
+    },
     pick: (stateId) => {
       if (stateId === AIR) return;
       const key = world.stateTable[stateId];
@@ -425,6 +479,13 @@ const boot = async (): Promise<void> => {
       cameraRig.update();
       scheduler.flush(3);
       post.render();
+      presence.updateLabels(
+        cameraRig.camera,
+        worldOffsetX,
+        worldOffsetZ,
+        app.clientWidth,
+        app.clientHeight,
+      );
       cpuMsAccum += performance.now() - tickStart;
       renderCount++;
       lastDrawCalls = renderer.info.render.drawCalls;

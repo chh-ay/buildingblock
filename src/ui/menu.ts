@@ -242,10 +242,24 @@ export const buildMenu = (state: AppState, actions: AppActions, report: Report):
   );
 
   const pill = el("div", { className: "peers-pill hidden" });
-  state.peers.sub((n) => {
-    pill.classList.toggle("hidden", n < 0);
-    if (n >= 0) pill.textContent = `${n} ${n === 1 ? "peer" : "peers"}`;
-  });
+  const renderPill = (): void => {
+    const count = state.peers();
+    pill.classList.toggle("hidden", count < 0);
+    if (count < 0) return;
+    pill.textContent = "";
+    for (const peer of state.roster()) {
+      const dot = el("span", { className: "peer-dot", title: peer.name });
+      dot.style.background = peer.color;
+      pill.append(dot);
+    }
+    pill.append(`${count} ${count === 1 ? "peer" : "peers"}`);
+    pill.title = state
+      .roster()
+      .map((peer) => peer.name)
+      .join(", ");
+  };
+  state.peers.sub(renderPill);
+  state.roster.sub(renderPill);
 
   return el("div", { className: "menu-area" }, pill, bar);
 };

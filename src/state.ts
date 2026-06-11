@@ -72,6 +72,13 @@ export interface ClassChip {
   name: string;
 }
 
+export interface PeerBadge {
+  id: string;
+  name: string;
+  /** CSS color string for UI chips/labels. */
+  color: string;
+}
+
 export interface AppState {
   tool: Signal<ToolId>;
   /** Block shape choice: 0 cube, 1 slab, 2 top slab, 3 ramp (auto-faces away from camera). */
@@ -102,6 +109,8 @@ export interface AppState {
   sunElevation: Signal<number>;
   /** Remote peers in the collab room; -1 = not in a room. */
   peers: Signal<number>;
+  /** Collab roster with derived identities (empty when not in a room). */
+  roster: Signal<readonly PeerBadge[]>;
   /** Transient status line; UI shows and auto-clears it. '' = none. */
   toast: Signal<string>;
 }
@@ -138,6 +147,7 @@ export const createAppState = (): AppState => ({
   sunAzimuth: signal(40),
   sunElevation: signal(55),
   peers: signal(-1),
+  roster: signal<readonly PeerBadge[]>([]),
   toast: signal(""),
 });
 

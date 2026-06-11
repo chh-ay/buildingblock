@@ -43,3 +43,20 @@ body {
     13px / 1.5 ui-monospace,
     monospace;
 }
+.presence-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
+}
+.peer-label {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  padding: 2px 8px;
+  background: rgba(16, 16, 20, 0.82);
+  border: 1px solid;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+}

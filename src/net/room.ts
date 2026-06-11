@@ -7,13 +7,14 @@
  * `"trystero"` entry re-exports the nostr strategy (`@trystero-p2p/nostr`),
  * which is the installed, supported transport — same zero-host model.
  *
- * Protocol (three message actions, all binary-safe):
+ * Protocol (four message actions, all binary-safe):
  * - "edit":     broadcast voxel edits as one packed Uint8Array per batch.
  * - "needsnap": empty request a joiner sends to ask for the current world.
  * - "snap":     full world snapshot bytes, sent only to the requesting peer.
+ * - "cur":      fire-and-forget presence cursor broadcasts (fixed-size record).
  */
 
-import { joinRoom } from "trystero";
+import { joinRoom, selfId } from "trystero";
 
 /** One remote voxel edit: world coords plus packed state key and shape id. */
 export interface RemoteCell {
@@ -26,6 +27,19 @@ export interface RemoteCell {
   shape: number;
 }
 
+/** A peer's live pointer: hovered voxel, face, active tool, and accent color. */
+export interface PresenceCursor {
+  x: number;
+  y: number;
+  z: number;
+  /** Hovered face id. */
+  face: number;
+  /** Active tool id. */
+  tool: number;
+  /** 24-bit RGB accent color. */
+  color: number;
+}
+
 /** Host-side hooks the session needs; all are wrapped so throws never break the wire. */
 export interface NetCallbacks {
   /** Apply edits received from a peer to the local world. */
@@ -34,13 +48,17 @@ export interface NetCallbacks {
   snapshotBytes(): Uint8Array;
   /** Replace the local world with a peer's snapshot. */
   restoreSnapshot(bytes: Uint8Array): void;
-  /** Connected-peer count changed (also called once with the initial 0). */
-  onPeers(count: number): void;
+  /** Full set of connected peer ids; called on every join/leave and once initially with []. */
+  onRoster(peerIds: readonly string[]): void;
+  /** A peer's presence cursor changed; null = hidden (also emitted when the peer leaves). */
+  onPeerCursor(peerId: string, cursor: PresenceCursor | null): void;
 }
 
 /** Live room handle returned by {@link joinBuildRoom}. */
 export interface NetSession {
   readonly roomId: string;
+  /** This client's trystero peer id. */
+  readonly selfId: string;
   /**
    * Broadcast a batch of local edits. `cells` uses the undo command layout:
    * [x, y, z, beforeStateId, afterStateId] × n; the after-state id is
@@ -51,6 +69,11 @@ export interface NetSession {
     stateTable: readonly number[],
     stateShapes: readonly number[],
   ): void;
+  /**
+   * Fire-and-forget presence broadcast; null hides the local cursor on all
+   * peers. No throttling here — the caller throttles.
+   */
+  sendCursor(cursor: PresenceCursor | null): void;
   /** Disconnect from the room; no callbacks fire afterwards. */
   leave(): void;
 }
@@ -60,6 +83,16 @@ export interface NetSession {
  *   u16 x | u16 y | u16 z | u32 key | u8 shape
  */
 const RECORD_BYTES = 11;
+
+/**
+ * Wire layout for the "cur" action, little-endian, fixed 12 bytes:
+ *   u16 x | u16 y | u16 z | u8 face | u8 tool | u32 color
+ * A null (hidden) cursor is the same length with face = 255 and zeros elsewhere.
+ */
+const CURSOR_BYTES = 12;
+
+/** Sentinel face value marking a null (hidden) cursor on the wire. */
+const CURSOR_NULL_FACE = 255;
 
 /** How long a joiner waits for a snapshot before deciding it is the room creator. */
 const SNAP_WAIT_MS = 2500;
@@ -125,6 +158,39 @@ const packEdits = (
     view.setUint8(o + 10, after === 0 ? 0 : (stateShapes[after] ?? 0) & 0xff);
   }
   return bytes;
+};
+
+/** Pack a presence cursor (or null) into the fixed-size wire record. */
+const packCursor = (cursor: PresenceCursor | null): Uint8Array => {
+  const bytes = new Uint8Array(CURSOR_BYTES);
+  const view = new DataView(bytes.buffer);
+  if (cursor === null) {
+    view.setUint8(6, CURSOR_NULL_FACE);
+    return bytes;
+  }
+  view.setUint16(0, cursor.x & 0xffff, true);
+  view.setUint16(2, cursor.y & 0xffff, true);
+  view.setUint16(4, cursor.z & 0xffff, true);
+  view.setUint8(6, cursor.face & 0xff);
+  view.setUint8(7, cursor.tool & 0xff);
+  view.setUint32(8, cursor.color >>> 0, true);
+  return bytes;
+};
+
+/** Parse a cursor record; undefined = malformed (ignore), null = hidden cursor. */
+const parseCursor = (bytes: Uint8Array): PresenceCursor | null | undefined => {
+  if (bytes.byteLength !== CURSOR_BYTES) return undefined;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const face = view.getUint8(6);
+  if (face === CURSOR_NULL_FACE) return null;
+  return {
+    x: view.getUint16(0, true),
+    y: view.getUint16(2, true),
+    z: view.getUint16(4, true),
+    face,
+    tool: view.getUint8(7),
+    color: view.getUint32(8, true),
+  };
 };
 
 /**
@@ -193,23 +259,31 @@ export const joinBuildRoom = (roomId: string, callbacks: NetCallbacks): NetSessi
     },
   });
 
+  const cursorAction = room.makeAction<Uint8Array>("cur", {
+    onMessage: (data, context) => {
+      if (left) return;
+      const bytes = asBytes(data);
+      const cursor = bytes === null ? undefined : parseCursor(bytes);
+      if (cursor === undefined) return; // malformed payload — ignore
+      safely("onPeerCursor", () => callbacks.onPeerCursor(context.peerId, cursor));
+    },
+  });
+
   const requestSnapshot = (target?: string): void => {
     needSnapAction.send(null, target === undefined ? undefined : { target }).catch((err) => {
       console.warn("net: needsnap send failed", err);
     });
   };
 
-  const peerCount = (): number => Object.keys(room.getPeers()).length;
-
-  const notifyPeers = (): void => {
+  const notifyRoster = (): void => {
     if (left) return;
-    const count = peerCount();
-    safely("onPeers", () => callbacks.onPeers(count));
+    const peerIds = Object.keys(room.getPeers());
+    safely("onRoster", () => callbacks.onRoster(peerIds));
   };
 
   room.onPeerJoin = (peerId) => {
     if (left) return;
-    notifyPeers();
+    notifyRoster();
     // Late WebRTC connections are common on public relays: re-ask each new
     // peer directly and give the snapshot a fresh window to arrive.
     if (!synced) {
@@ -217,22 +291,31 @@ export const joinBuildRoom = (roomId: string, callbacks: NetCallbacks): NetSessi
       armSyncTimer();
     }
   };
-  room.onPeerLeave = () => {
-    notifyPeers();
+  room.onPeerLeave = (peerId) => {
+    if (left) return;
+    notifyRoster();
+    safely("onPeerCursor", () => callbacks.onPeerCursor(peerId, null));
   };
 
-  notifyPeers(); // initial count (0)
+  notifyRoster(); // initial roster ([])
   requestSnapshot(); // joiner asks right away (no-op while nobody is connected)
   armSyncTimer();
 
   return {
     roomId,
+    selfId,
     broadcastEdits: (cells, stateTable, stateShapes) => {
       if (left) return;
       markSynced(); // first local edit makes this world authoritative
       if (cells.length === 0) return;
       editAction.send(packEdits(cells, stateTable, stateShapes)).catch((err) => {
         console.warn("net: edit send failed", err);
+      });
+    },
+    sendCursor: (cursor) => {
+      if (left) return;
+      cursorAction.send(packCursor(cursor)).catch((err) => {
+        console.warn("net: cursor send failed", err);
       });
     },
     leave: () => {

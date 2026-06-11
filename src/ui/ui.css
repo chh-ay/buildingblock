@@ -581,3 +581,12 @@ kbd {
 .size-cancel:hover {
   color: #e8e8e4;
 }
+
+.peer-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 50%;
+  vertical-align: -1px;
+}
