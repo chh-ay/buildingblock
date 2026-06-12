@@ -98,6 +98,24 @@ export const buildColorPanel = (state: AppState): HTMLElement => {
     shapeRow.append(b);
   }
 
+  // Ramp orientation picker, shown only while the ramp shape is active. The hover
+  // preview wedge makes each option legible; "Auto" faces away from the camera.
+  const RAMP_FACINGS: readonly { value: number; label: string; hint: string }[] = [
+    { value: -1, label: "Auto", hint: "Faces away from the camera" },
+    { value: 3, label: "→", hint: "Rises toward +X" },
+    { value: 4, label: "←", hint: "Rises toward −X" },
+    { value: 5, label: "↓", hint: "Rises toward +Z" },
+    { value: 6, label: "↑", hint: "Rises toward −Z" },
+  ];
+  const rampRow = el("div", { className: "class-row ramp-row" });
+  for (const facing of RAMP_FACINGS) {
+    const b = el("button", { type: "button", className: "chip", title: facing.hint }, facing.label);
+    b.onclick = () => state.rampFacing.set(facing.value);
+    state.rampFacing.sub((value) => b.classList.toggle("active", value === facing.value));
+    rampRow.append(b);
+  }
+  state.shape.sub((id) => rampRow.classList.toggle("ramp-row-hidden", id !== 3));
+
   let hue = 0;
   let sat = 1;
   let val = 1;
@@ -255,7 +273,7 @@ export const buildColorPanel = (state: AppState): HTMLElement => {
     );
 
   panel.append(
-    section("Shape", shapeRow),
+    section("Shape", shapeRow, rampRow),
     section("Material", classRow),
     section("Color", el("div", { className: "color-row" }, colorWrap, hexInput), swatchGrid),
     recentsSection,

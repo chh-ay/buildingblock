@@ -4,7 +4,7 @@
  */
 import { MOUSE, PerspectiveCamera, Raycaster, TOUCH, Vector2 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { WORLD_SX, WORLD_SZ } from "../core/types";
+import { WORLD_SX, WORLD_SY, WORLD_SZ } from "../core/types";
 import type { Ray } from "../interact/api";
 
 export class CameraRig {
@@ -73,5 +73,21 @@ export class CameraRig {
 
   update(): void {
     this.controls.update();
+    // Keep the orbit pivot inside the build volume (+ a small margin) so panning
+    // can never strand the camera in empty air past the world.
+    const target = this.controls.target;
+    const limitX = WORLD_SX / 2 + 8;
+    const limitZ = WORLD_SZ / 2 + 8;
+    const limitY = WORLD_SY + 12;
+    const clampedX = target.x < -limitX ? -limitX : target.x > limitX ? limitX : target.x;
+    const clampedY = target.y < 0 ? 0 : target.y > limitY ? limitY : target.y;
+    const clampedZ = target.z < -limitZ ? -limitZ : target.z > limitZ ? limitZ : target.z;
+    if (clampedX !== target.x || clampedY !== target.y || clampedZ !== target.z) {
+      // Move the camera by the same correction so the view doesn't jerk at the edge.
+      this.camera.position.x += clampedX - target.x;
+      this.camera.position.y += clampedY - target.y;
+      this.camera.position.z += clampedZ - target.z;
+      target.set(clampedX, clampedY, clampedZ);
+    }
   }
 }

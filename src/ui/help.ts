@@ -21,6 +21,7 @@ const KEYBOARD: readonly (readonly [readonly string[], string])[] = [
   [["Ctrl+Y", "Ctrl+Shift+Z"], "Redo"],
   [["Esc"], "Cancel gesture"],
   [["F"], "Frame camera"],
+  [["R"], "Rotate ramp"],
   [["G"], "Toggle grid"],
   [["F3"], "Perf HUD"],
   [["?"], "Help"],

@@ -71,6 +71,7 @@ export const initInput = (deps: InputDeps): void => {
   };
 
   canvas.addEventListener("pointerdown", (e) => {
+    if (state.replaying()) return; // camera stays free; tools stay off
     if (e.pointerType === "touch") {
       touchStart = touchStart
         ? null // second finger: camera gesture, never a tap
@@ -94,6 +95,7 @@ export const initInput = (deps: InputDeps): void => {
       }
       return;
     }
+    if (state.replaying()) return;
     const p = pointerOf(e);
     if (gesture) gesture.move(p, env);
     else currentTool().hover(p, env);
@@ -149,6 +151,8 @@ export const initInput = (deps: InputDeps): void => {
   window.addEventListener("keydown", (e) => {
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    // During replay the journal is rebuilding the world; undo/tool/edit hotkeys must stay off.
+    if (state.replaying()) return;
     const k = e.key.toLowerCase();
     if (e.ctrlKey || e.metaKey) {
       if (k === "z") {
@@ -173,6 +177,12 @@ export const initInput = (deps: InputDeps): void => {
       else state.helpOpen.set(false);
     } else if (k === "f") {
       deps.frame();
+    } else if (k === "r") {
+      // Rotate the ramp: Auto → +X → −X → +Z → −Z → Auto.
+      if (state.shape() === 3) {
+        const facing = state.rampFacing();
+        state.rampFacing.set(facing === -1 ? 3 : facing >= 6 ? -1 : facing + 1);
+      }
     } else if (k === "g") {
       state.grid.set(!state.grid());
     } else if (k === "f3") {

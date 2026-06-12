@@ -2,7 +2,7 @@ name: deploy
 
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 # Node 24 becomes the forced runtime for actions on 2026-06-16; opt in now so a

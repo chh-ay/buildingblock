@@ -51,6 +51,7 @@ import { createRenderCore, type SkyState } from "./render/renderer";
 import { createSound } from "./sound";
 import { buildStarter } from "./starter";
 import { type AppActions, createAppState, type ToolId } from "./state";
+import { confirmDialog } from "./ui/confirm";
 import { openGallery as openGalleryModal } from "./ui/gallery";
 import { initUi } from "./ui/index";
 import { pickWorldSize } from "./ui/size-picker";
@@ -319,10 +320,12 @@ const boot = async (): Promise<void> => {
     saves.autosaveSoon();
   };
 
-  /** Ramp placements face away from the camera; other shapes map 1:1 from the chip choice. */
+  /** Ramp orientation: explicit facing when chosen, else away from the camera. */
   const shapeForPlacement = (): number => {
     const choice = state.shape();
     if (choice !== 3) return choice;
+    const facing = state.rampFacing();
+    if (facing >= SHAPE_RAMP_PX) return facing;
     const dx = cameraRig.controls.target.x - cameraRig.camera.position.x;
     const dz = cameraRig.controls.target.z - cameraRig.camera.position.z;
     if (Math.abs(dx) >= Math.abs(dz)) return dx >= 0 ? SHAPE_RAMP_PX : SHAPE_RAMP_NX;
@@ -385,6 +388,7 @@ const boot = async (): Promise<void> => {
       state.cls.set(stateClass(key));
       const shape = world.stateShapes[stateId] ?? 0;
       state.shape.set(shape < 3 ? shape : 3);
+      if (shape >= 3) state.rampFacing.set(shape); // eyedropper copies the exact orientation
       sound.play("pick");
     },
   };
@@ -569,6 +573,10 @@ const boot = async (): Promise<void> => {
     baselineSnapshot: WorldSnapshot | null;
     lastTickSoundAt: number;
     savedCameraPos: Vector3;
+    /** Camera pose the orbit eases away from; refreshed on every resume. */
+    blendPos: Vector3;
+    blendTarget: Vector3;
+    blendFrom: number;
     savedTarget: Vector3;
     blocker: HTMLDivElement;
     transport: ReplayTransport;
@@ -643,6 +651,14 @@ const boot = async (): Promise<void> => {
         if (!replayRun) return;
         replayRun.playing = !replayRun.playing;
         replayRun.transport.setPlaying(replayRun.playing);
+        // Paused: free the camera (tools stay gated by state.replaying); playing: cinematic lock.
+        replayRun.blocker.style.display = replayRun.playing ? "" : "none";
+        if (replayRun.playing) {
+          // Resume eases from wherever the player parked the camera while paused.
+          replayRun.blendPos.copy(cameraRig.camera.position);
+          replayRun.blendTarget.copy(cameraRig.controls.target);
+          replayRun.blendFrom = performance.now();
+        }
       },
       onSeek: (frac) => {
         if (replayRun) replayRun.pendingSeek = frac;
@@ -677,6 +693,9 @@ const boot = async (): Promise<void> => {
       lastTickSoundAt: 0,
       savedCameraPos: cameraRig.camera.position.clone(),
       savedTarget: cameraRig.controls.target.clone(),
+      blendPos: cameraRig.camera.position.clone(),
+      blendTarget: cameraRig.controls.target.clone(),
+      blendFrom: performance.now(),
       blocker,
       transport,
       homeAfter,
@@ -771,20 +790,22 @@ const boot = async (): Promise<void> => {
     }
     run.transport.setProgress(run.durationMs <= 0 ? 1 : run.progressMs / run.durationMs);
 
-    // The orbit follows the timeline (scrubbing winds the camera); the entry blend is wall-clock.
-    orbitPoint(
-      run.center,
-      run.radius,
-      run.angle0 + (run.progressMs / 1000) * 0.28,
-      scratchOrbitPos,
-    );
-    scratchOrbitTarget.set(run.center.x, run.center.y, run.center.z);
-    const sinceStartSec = (now - run.startedAt) / 1000;
-    const blendT = Math.min(1, sinceStartSec / 0.9);
-    const blend = blendT * blendT * (3 - 2 * blendT);
-    cameraRig.camera.position.lerpVectors(run.savedCameraPos, scratchOrbitPos, blend);
-    cameraRig.controls.target.lerpVectors(run.savedTarget, scratchOrbitTarget, blend);
-    cameraRig.camera.lookAt(cameraRig.controls.target);
+    // The orbit follows the timeline and only drives the camera while playing;
+    // paused, the player is free to orbit and inspect the half-built world.
+    if (run.playing) {
+      orbitPoint(
+        run.center,
+        run.radius,
+        run.angle0 + (run.progressMs / 1000) * 0.28,
+        scratchOrbitPos,
+      );
+      scratchOrbitTarget.set(run.center.x, run.center.y, run.center.z);
+      const blendT = Math.min(1, (now - run.blendFrom) / 900);
+      const blend = blendT * blendT * (3 - 2 * blendT);
+      cameraRig.camera.position.lerpVectors(run.blendPos, scratchOrbitPos, blend);
+      cameraRig.controls.target.lerpVectors(run.blendTarget, scratchOrbitTarget, blend);
+      cameraRig.camera.lookAt(cameraRig.controls.target);
+    }
     if (run.playing && run.progressMs >= run.durationMs) finishReplay(false);
   };
 
@@ -817,8 +838,16 @@ const boot = async (): Promise<void> => {
     URL.revokeObjectURL(url);
   };
 
+  /** World-mutating actions wait for the replay to end (Skip is one tap away). */
+  const busyReplaying = (): boolean => {
+    if (!state.replaying()) return false;
+    state.toast.set("Finish or skip the replay first");
+    return true;
+  };
+
   const actions: AppActions = {
     newWorld: () => {
+      if (busyReplaying()) return;
       void (async () => {
         leaveCollabRoom();
         const current = WORLD_PRESETS.find(
@@ -838,6 +867,7 @@ const boot = async (): Promise<void> => {
       })();
     },
     share: async () => {
+      if (busyReplaying()) return;
       if (!net) {
         const roomId = randomRoomId();
         window.location.hash = `r=${roomId}`;
@@ -847,11 +877,13 @@ const boot = async (): Promise<void> => {
       state.toast.set("Invite link copied — building together");
     },
     save: async (name) => {
+      if (busyReplaying()) return;
       await saves.saveAs(name);
       state.toast.set(`Saved "${name}"`);
     },
     listSaves: () => saves.list(),
     load: async (name) => {
+      if (busyReplaying()) return;
       leaveCollabRoom();
       await saves.load(name);
       state.toast.set(`Loaded "${name}"`);
@@ -859,6 +891,7 @@ const boot = async (): Promise<void> => {
     deleteSave: (name) => saves.remove(name),
     exportFile: () => saves.exportBbkFile(),
     importFile: async (file) => {
+      if (busyReplaying()) return;
       leaveCollabRoom();
       await saves.importAnyFile(file);
       state.toast.set(`Imported ${file.name}`);
@@ -875,6 +908,7 @@ const boot = async (): Promise<void> => {
     },
     frameCamera: () => cameraRig.frame(contentBounds()),
     shareBuildLink: async () => {
+      if (busyReplaying()) return;
       const bytes = encodeSnapshot(world.toSnapshot());
       const gz = new Uint8Array(
         await new Response(
@@ -890,6 +924,7 @@ const boot = async (): Promise<void> => {
       state.toast.set("Build link copied — the whole world rides in the URL");
     },
     openGallery: async () => {
+      if (busyReplaying()) return;
       const baseUrl =
         (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
       const pick = await openGalleryModal(baseUrl);
@@ -898,9 +933,16 @@ const boot = async (): Promise<void> => {
       sound.play("ui");
       const snapshot = decodeSnapshot(pick.data);
       if (!restoreSnapshot(snapshot, true)) return; // dim change: page reboots into the scene
-      state.toast.set(`"${pick.entry.name}" — watch it come together`);
       stageShowcase(snapshot);
-      beginReplay(true);
+      frameHero();
+      state.toast.set(`"${pick.entry.name}" loaded`);
+      const watch = await confirmDialog({
+        title: `Watch "${pick.entry.name}" come together?`,
+        body: "A short construction replay. Scrub, pause, change speed, or skip anytime.",
+        yes: "Watch the build",
+        no: "Just explore",
+      });
+      if (watch && !replayRun) beginReplay(true);
     },
     startReplay: () => beginReplay(),
   };
@@ -914,12 +956,26 @@ const boot = async (): Promise<void> => {
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
     state.toast.set("Shared build loaded — it's yours to remix");
     stageShowcase(plan.sharedBuild);
-    beginReplay(true);
+    void confirmDialog({
+      title: "Watch this build come together?",
+      body: "Someone shared a world with you. Replay its construction, or jump straight in.",
+      yes: "Watch the build",
+      no: "Jump in",
+    }).then((watch) => {
+      if (watch && !replayRun) beginReplay(true);
+    });
   } else if (plan.pendingWorld && (await saves.loadPending())) {
     state.toast.set("Loaded — remix away");
     if (!plan.roomId) {
       stageShowcase(world.toSnapshot());
-      beginReplay(true);
+      void confirmDialog({
+        title: "Watch it come together?",
+        body: "Replay this scene's construction — scrub, pause, or skip anytime.",
+        yes: "Watch the build",
+        no: "Just explore",
+      }).then((watch) => {
+        if (watch && !replayRun) beginReplay(true);
+      });
     }
   } else if (!(await saves.loadAutosave()) && !plan.roomId) {
     buildStarter(world);

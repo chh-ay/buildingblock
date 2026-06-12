@@ -81,8 +81,10 @@ export interface PeerBadge {
 
 export interface AppState {
   tool: Signal<ToolId>;
-  /** Block shape choice: 0 cube, 1 slab, 2 top slab, 3 ramp (auto-faces away from camera). */
+  /** Block shape choice: 0 cube, 1 slab, 2 top slab, 3 ramp. */
   shape: Signal<number>;
+  /** Ramp orientation: -1 auto-faces away from the camera, else SHAPE_RAMP_PX..NZ (3..6). */
+  rampFacing: Signal<number>;
   /** Current paint color, 0xRRGGBB. */
   color: Signal<number>;
   /** Current material class id. */
@@ -127,6 +129,7 @@ export const DEFAULT_SWATCHES: readonly number[] = [
 export const createAppState = (): AppState => ({
   tool: signal<ToolId>("place"),
   shape: signal(0),
+  rampFacing: signal(-1),
   color: signal(0xd94f3d),
   cls: signal(0),
   swatches: signal(DEFAULT_SWATCHES),
