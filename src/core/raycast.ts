@@ -23,6 +23,7 @@ export const raycastVoxel = (
 ): RayHit | null => {
   const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
   if (len === 0) return null;
+
   dx /= len;
   dy /= len;
   dz /= len;
@@ -33,6 +34,8 @@ export const raycastVoxel = (
   dir[0] = dx;
   dir[1] = dy;
   dir[2] = dz;
+
+  // ── clip to world slab ──────────────────────────────────────────────────────
 
   let tEnter = -Infinity;
   let tExit = Infinity;
@@ -60,6 +63,8 @@ export const raycastVoxel = (
   }
   if (tEnter > tExit || tExit < 0) return null;
 
+  // ── entry cell ──────────────────────────────────────────────────────────────
+
   const t0 = Math.max(tEnter, 0) + 1e-7;
   if (t0 > maxDist) return null;
 
@@ -80,6 +85,8 @@ export const raycastVoxel = (
     }
     return { x, y, z, face: (axis << 1) | (dir[axis]! > 0 ? 1 : 0), ground: false };
   }
+
+  // ── DDA march ───────────────────────────────────────────────────────────────
 
   const stepX = dx > 0 ? 1 : dx < 0 ? -1 : 0;
   const stepY = dy > 0 ? 1 : dy < 0 ? -1 : 0;
@@ -110,6 +117,7 @@ export const raycastVoxel = (
       z += stepZ;
       face = stepZ > 0 ? 5 : 4;
     }
+
     if (t > maxDist) return null;
     if (x < 0 || y < 0 || z < 0 || x >= WORLD_SX || y >= WORLD_SY || z >= WORLD_SZ) return null;
     if (getState(x, y, z) !== AIR) return { x, y, z, face, ground: false };
@@ -126,10 +134,13 @@ export const raycastGround = (
   dz: number,
 ): RayHit | null => {
   if (dy >= 0) return null;
+
   const t = -oy / dy;
   if (t <= 0) return null;
+
   const x = Math.floor(ox + dx * t);
   const z = Math.floor(oz + dz * t);
   if (x < 0 || x >= WORLD_SX || z < 0 || z >= WORLD_SZ) return null;
+
   return { x, y: -1, z, face: 2, ground: true };
 };

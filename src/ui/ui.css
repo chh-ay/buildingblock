@@ -855,12 +855,12 @@ kbd {
   background: rgba(255, 255, 255, 0.1);
 }
 
-/* ── ramp orientation row ────────────────────────────────────────────────── */
+/* ── facing row ──────────────────────────────────────────────────────────── */
 
-.ramp-row {
+.facing-row {
   grid-template-columns: auto repeat(4, 1fr);
 }
 
-.ramp-row-hidden {
+.facing-row-hidden {
   display: none;
 }

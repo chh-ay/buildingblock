@@ -18,6 +18,7 @@ const checkRow = (label: string, sig: Signal<boolean>): HTMLElement => {
   sig.sub((v) => {
     input.checked = v;
   });
+
   return el("label", { className: "check-row" }, input, label);
 };
 
@@ -35,6 +36,7 @@ const choiceRow = <T extends string | number>(
   sig.sub((v) => {
     sel.value = String(v);
   });
+
   return el("label", { className: "set-row" }, el("span", {}, label), sel);
 };
 
@@ -58,6 +60,7 @@ const sliderRow = (
     input.value = String(v);
     value.textContent = `${v}${suffix}`;
   });
+
   return el("label", { className: "set-row slider-row" }, el("span", {}, label), input, value);
 };
 
@@ -68,6 +71,7 @@ const selectRow = (label: string, sig: Signal<number>, options: readonly number[
   sig.sub((v) => {
     sel.value = String(v);
   });
+
   return el("label", { className: "select-row" }, el("span", {}, label), sel);
 };
 
@@ -202,6 +206,13 @@ export const buildMenu = (state: AppState, actions: AppActions, report: Report):
     checkRow("Bloom", state.bloom),
     checkRow("Perf HUD", state.hud),
     checkRow("Sound", state.sound),
+    checkRow("Autosave", state.autosave),
+    choiceRow("Autosave interval", state.autosaveSec, [
+      { value: 30, label: "30s" },
+      { value: 60, label: "1m" },
+      { value: 120, label: "2m" },
+      { value: 300, label: "5m" },
+    ]),
     selectRow("Pixel ratio cap", state.dprCap, [1, 1.5, 2]),
     choiceRow("Shadow quality", state.shadowRes, [
       { value: 1024, label: "Low" },
@@ -277,25 +288,71 @@ export const buildMenu = (state: AppState, actions: AppActions, report: Report):
 
   bar.append(file.wrap, fileInput, galleryBtn, share.wrap, replayBtn, settings.wrap, helpBtn);
 
+  // ── peers pill + roster popover ──────────────────────────────────────────
+
+  const peersPop = el("div", { className: "pop menu-pop peers-pop" });
+  const renderPeersPop = (): void => {
+    peersPop.textContent = "";
+
+    const roster = state.roster();
+    if (roster.length === 0) {
+      peersPop.append(el("div", { className: "pop-note" }, "No one else yet — send the invite"));
+    }
+    for (const peer of roster) {
+      const dot = el("span", { className: "peer-dot" });
+      dot.style.background = peer.color;
+      peersPop.append(el("div", { className: "peer-row" }, dot, ` ${peer.name}`));
+    }
+
+    const copyBtn = el("button", { type: "button", className: "accent" }, "Copy invite");
+    copyBtn.onclick = () => {
+      actions.copyInvite().catch(report);
+      closePopovers();
+    };
+
+    const leaveBtn = el("button", { type: "button" }, "Leave room");
+    leaveBtn.onclick = () => {
+      closePopovers();
+      actions.leaveRoom();
+    };
+
+    peersPop.append(el("div", { className: "pop-actions" }, copyBtn, leaveBtn));
+  };
+
   const pill = el("div", { className: "peers-pill hidden" });
+  pill.style.pointerEvents = "auto"; // .peers-pill ships pointer-events: none; ours is a button
+  pill.style.cursor = "pointer";
+
+  const pillWrap = el("div", { className: "menu-item" }, pill, peersPop);
+  pill.onclick = () => {
+    if (togglePopover(pillWrap, peersPop)) renderPeersPop();
+  };
+
+  // Live-update the roster list while the popover is open (joins/leaves mid-look).
+  state.roster.sub(() => {
+    if (peersPop.classList.contains("open")) renderPeersPop();
+  });
+
   const renderPill = (): void => {
     const count = state.peers();
     pill.classList.toggle("hidden", count < 0);
     if (count < 0) return;
+
     pill.textContent = "";
+    if (count === 0) {
+      pill.append("waiting for friends…");
+      return;
+    }
+
     for (const peer of state.roster()) {
       const dot = el("span", { className: "peer-dot", title: peer.name });
       dot.style.background = peer.color;
       pill.append(dot);
     }
-    pill.append(`${count} ${count === 1 ? "peer" : "peers"}`);
-    pill.title = state
-      .roster()
-      .map((peer) => peer.name)
-      .join(", ");
+    pill.append(String(count));
   };
   state.peers.sub(renderPill);
   state.roster.sub(renderPill);
 
-  return el("div", { className: "menu-area" }, pill, bar);
+  return el("div", { className: "menu-area" }, pillWrap, bar);
 };

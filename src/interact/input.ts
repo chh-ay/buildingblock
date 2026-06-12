@@ -5,6 +5,7 @@
  * - wheel during an active gesture is offered to the tool first (box height) and swallowed if used.
  */
 import { raycastGround, raycastVoxel } from "../core/raycast";
+import { SHAPE_FAMILIES } from "../core/types";
 import type { AppState, ToolId } from "../state";
 import type { Ray, Tool, ToolEnv, ToolPointer } from "./api";
 
@@ -178,10 +179,11 @@ export const initInput = (deps: InputDeps): void => {
     } else if (k === "f") {
       deps.frame();
     } else if (k === "r") {
-      // Rotate the ramp: Auto → +X → −X → +Z → −Z → Auto.
-      if (state.shape() === 3) {
-        const facing = state.rampFacing();
-        state.rampFacing.set(facing === -1 ? 3 : facing >= 6 ? -1 : facing + 1);
+      // Rotate an oriented family's facing: Auto → 0 → 1 → 2 → 3 → Auto.
+      const family = SHAPE_FAMILIES[state.family()];
+      if (family.orientations.length > 1) {
+        const facing = state.facing();
+        state.facing.set(facing >= family.orientations.length - 1 ? -1 : facing + 1);
       }
     } else if (k === "g") {
       state.grid.set(!state.grid());

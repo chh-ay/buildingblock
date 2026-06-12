@@ -20,11 +20,17 @@ export class CameraRig {
     this.camera.position.set(34, 30, 52);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.08;
+    // Time-based damping (update receives dt); higher factor = tighter stop.
+    this.controls.dampingFactor = 0.15;
     this.controls.target.set(0, 3, 0);
-    this.controls.minDistance = 4;
-    this.controls.maxDistance = 700;
+    this.controls.minDistance = 2;
+    // Zoom-out ceiling scales with the world so small plates can't become a speck.
+    this.controls.maxDistance = Math.max(160, Math.max(WORLD_SX, WORLD_SZ) * 2.2);
     this.controls.maxPolarAngle = Math.PI * 0.495;
+    // Wheel dollies toward the pointer, not the pivot — the single biggest feel win.
+    this.controls.zoomToCursor = true;
+    // Pan slides along the ground plane instead of drifting skyward in screen space.
+    this.controls.screenSpacePanning = false;
     this.controls.mouseButtons = { LEFT: null, MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE };
     this.controls.touches = { ONE: TOUCH.ROTATE, TWO: TOUCH.DOLLY_PAN };
   }
@@ -52,6 +58,7 @@ export class CameraRig {
     let cy = 4;
     let cz = 0;
     let radius = Math.max(WORLD_SX, WORLD_SZ) * 0.42;
+
     if (bounds) {
       const { min, max } = bounds;
       cx = (min[0] + max[0]) / 2 - WORLD_SX / 2;
@@ -59,11 +66,37 @@ export class CameraRig {
       cz = (min[2] + max[2]) / 2 - WORLD_SZ / 2;
       radius = Math.max(6, Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2);
     }
+
     const dist = (radius / Math.tan((this.camera.fov * Math.PI) / 360)) * 1.15;
     const dir = this.camera.position.clone().sub(this.controls.target).normalize();
     if (dir.lengthSq() === 0) dir.set(0.5, 0.6, 0.8).normalize();
+
+    // Rescue degenerate angles: an orbit that drifted to eye level (or below the
+    // plate) reframes at a pleasant 3/4 elevation instead of a flat side view.
+    if (dir.y < 0.25) {
+      const horizontal = Math.max(1e-4, Math.hypot(dir.x, dir.z));
+      const lift = 0.545; // sin ≈ 33° above the horizon
+      const scale = Math.sqrt(1 - lift * lift) / horizontal;
+      dir.set(dir.x * scale, lift, dir.z * scale);
+    }
+
     this.controls.target.set(cx, cy, cz);
     this.camera.position.set(cx + dir.x * dist, cy + dir.y * dist, cz + dir.z * dist);
+  }
+
+  /**
+   * Re-pivot the orbit on a voxel-space point without changing the view
+   * direction or distance (camera pans by the same delta as the target).
+   */
+  focusOn(x: number, y: number, z: number): void {
+    const target = this.controls.target;
+    const sx = x - WORLD_SX / 2;
+    const sz = z - WORLD_SZ / 2;
+
+    this.camera.position.x += sx - target.x;
+    this.camera.position.y += y - target.y;
+    this.camera.position.z += sz - target.z;
+    target.set(sx, y, sz);
   }
 
   resize(width: number, height: number): void {
@@ -71,8 +104,8 @@ export class CameraRig {
     this.camera.updateProjectionMatrix();
   }
 
-  update(): void {
-    this.controls.update();
+  update(dtSeconds: number): void {
+    this.controls.update(dtSeconds);
     // Keep the orbit pivot inside the build volume (+ a small margin) so panning
     // can never strand the camera in empty air past the world.
     const target = this.controls.target;

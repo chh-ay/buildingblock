@@ -1,3 +1,4 @@
+import { SHAPE_FAMILIES } from "../core/types";
 import type { AppState } from "../state";
 import { el } from "./el";
 import { togglePopover } from "./popover";
@@ -84,37 +85,45 @@ export const buildColorPanel = (state: AppState): HTMLElement => {
   state.classes.sub(renderClasses);
   state.cls.sub(renderClasses);
 
-  const SHAPES: readonly { id: number; name: string }[] = [
-    { id: 0, name: "Cube" },
-    { id: 1, name: "Slab" },
-    { id: 2, name: "Top" },
-    { id: 3, name: "Ramp" },
-  ];
+  // ── shape family + facing chips ─────────────────────────────────────────────
+
   const shapeRow = el("div", { className: "class-row shape-row" });
-  for (const s of SHAPES) {
-    const b = el("button", { type: "button", className: "chip", title: s.name }, s.name);
-    b.onclick = () => state.shape.set(s.id);
-    state.shape.sub((id) => b.classList.toggle("active", id === s.id));
+  for (let i = 0; i < SHAPE_FAMILIES.length; i++) {
+    const family = SHAPE_FAMILIES[i];
+    const b = el(
+      "button",
+      { type: "button", className: "chip", title: family.label },
+      family.label,
+    );
+    b.onclick = () => state.family.set(i);
+    state.family.sub((id) => b.classList.toggle("active", id === i));
     shapeRow.append(b);
   }
 
-  // Ramp orientation picker, shown only while the ramp shape is active. The hover
-  // preview wedge makes each option legible; "Auto" faces away from the camera.
-  const RAMP_FACINGS: readonly { value: number; label: string; hint: string }[] = [
-    { value: -1, label: "Auto", hint: "Faces away from the camera" },
-    { value: 3, label: "→", hint: "Rises toward +X" },
-    { value: 4, label: "←", hint: "Rises toward −X" },
-    { value: 5, label: "↓", hint: "Rises toward +Z" },
-    { value: 6, label: "↑", hint: "Rises toward −Z" },
-  ];
-  const rampRow = el("div", { className: "class-row ramp-row" });
-  for (const facing of RAMP_FACINGS) {
-    const b = el("button", { type: "button", className: "chip", title: facing.hint }, facing.label);
-    b.onclick = () => state.rampFacing.set(facing.value);
-    state.rampFacing.sub((value) => b.classList.toggle("active", value === facing.value));
-    rampRow.append(b);
-  }
-  state.shape.sub((id) => rampRow.classList.toggle("ramp-row-hidden", id !== 3));
+  // Facing picker, shown only while an oriented family is active. Labels differ
+  // between axis (arrows) and diagonal (corners) families, so chips re-render on
+  // family change; "Auto" faces away from the camera.
+  const facingRow = el("div", { className: "class-row facing-row" });
+  const renderFacings = (): void => {
+    const family = SHAPE_FAMILIES[state.family()];
+    const oriented = family.orientations.length > 1;
+    facingRow.classList.toggle("facing-row-hidden", !oriented);
+
+    facingRow.textContent = "";
+    if (!oriented) return;
+
+    const labels = ["Auto", ...(family.orientationLabels ?? [])];
+    const hints = ["Faces away from the camera", ...(family.orientationHints ?? [])];
+    for (let i = 0; i < labels.length; i++) {
+      const value = i - 1; // -1 = auto, else orientation index
+      const b = el("button", { type: "button", className: "chip", title: hints[i] }, labels[i]);
+      if (state.facing() === value) b.classList.add("active");
+      b.onclick = () => state.facing.set(value);
+      facingRow.append(b);
+    }
+  };
+  state.family.sub(renderFacings);
+  state.facing.sub(renderFacings);
 
   let hue = 0;
   let sat = 1;
@@ -273,7 +282,7 @@ export const buildColorPanel = (state: AppState): HTMLElement => {
     );
 
   panel.append(
-    section("Shape", shapeRow, rampRow),
+    section("Shape", shapeRow, facingRow),
     section("Material", classRow),
     section("Color", el("div", { className: "color-row" }, colorWrap, hexInput), swatchGrid),
     recentsSection,

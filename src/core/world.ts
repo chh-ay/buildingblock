@@ -33,6 +33,8 @@ export class VoxelWorld {
   /** Per-voxel edit hook, fired after every successful set() (any source: tools, undo, network). */
   onEdit: ((x: number, y: number, z: number, stateId: number) => void) | null = null;
 
+  // ── state interning ─────────────────────────────────────────────────────────
+
   /** Number of distinct interned states (including air). */
   get stateCount(): number {
     return this.stateTable.length;
@@ -51,6 +53,8 @@ export class VoxelWorld {
     return id;
   }
 
+  // ── voxel access ────────────────────────────────────────────────────────────
+
   /** Resolved stateId at world coords; AIR when out of bounds or the chunk is empty. */
   get(x: number, y: number, z: number): number {
     if (!inWorld(x, y, z)) return AIR;
@@ -64,6 +68,7 @@ export class VoxelWorld {
   /** Write a voxel; false when out of bounds or unchanged. Fires onDirty for affected chunks. */
   set(x: number, y: number, z: number, stateId: number): boolean {
     if (!inWorld(x, y, z)) return false;
+
     const cx = x >> CHUNK_BITS;
     const cy = y >> CHUNK_BITS;
     const cz = z >> CHUNK_BITS;
@@ -79,17 +84,21 @@ export class VoxelWorld {
     const ly = y & m;
     const lz = z & m;
     if (!chunk.setState(vIndex(lx, ly, lz), stateId)) return false;
+
     if (chunk.nonAir === 0) this.chunks[ci] = null;
     this.onEdit?.(x, y, z, stateId);
+
     const onDirty = this.onDirty;
     if (!onDirty) return true;
     onDirty(ci);
+
     const nx = lx === 0 ? 2 : lx === m ? 2 : 1;
     const ny = ly === 0 ? 2 : ly === m ? 2 : 1;
     const nz = lz === 0 ? 2 : lz === m ? 2 : 1;
     offsX[1] = lx === 0 ? -1 : 1;
     offsY[1] = ly === 0 ? -1 : 1;
     offsZ[1] = lz === 0 ? -1 : 1;
+
     for (let i = 0; i < nx; i++) {
       const ncx = cx + offsX[i];
       if (ncx < 0 || ncx >= WORLD_CX) continue;
@@ -105,8 +114,11 @@ export class VoxelWorld {
         }
       }
     }
+
     return true;
   }
+
+  // ── queries ─────────────────────────────────────────────────────────────────
 
   /** Total non-air voxels across all chunks. */
   voxelCount(): number {
@@ -126,12 +138,14 @@ export class VoxelWorld {
     let maxX = -Infinity;
     let maxY = -Infinity;
     let maxZ = -Infinity;
+
     for (let ci = 0; ci < CHUNK_COUNT; ci++) {
       const chunk = this.chunks[ci];
       if (!chunk) continue;
       const originX = (ci % WORLD_CX) << CHUNK_BITS;
       const originZ = (((ci / WORLD_CX) | 0) % WORLD_CZ) << CHUNK_BITS;
       const originY = ((ci / (WORLD_CX * WORLD_CZ)) | 0) << CHUNK_BITS;
+
       for (let y = 0; y < CHUNK_SIZE; y++) {
         for (let z = 0; z < CHUNK_SIZE; z++) {
           for (let x = 0; x < CHUNK_SIZE; x++) {
@@ -149,9 +163,12 @@ export class VoxelWorld {
         }
       }
     }
+
     if (!Number.isFinite(minX)) return null;
     return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
   }
+
+  // ── snapshots & lifecycle ───────────────────────────────────────────────────
 
   /** Resolved, palette-free copy of the world for codecs. */
   toSnapshot(): WorldSnapshot {
@@ -163,6 +180,7 @@ export class VoxelWorld {
       chunk.readStates(states);
       chunks.push({ ci, states });
     }
+
     return {
       sx: WORLD_SX,
       sy: WORLD_SY,
@@ -184,6 +202,7 @@ export class VoxelWorld {
     if (s.stateShapes.length !== s.stateTable.length) {
       throw new Error("snapshot tables length mismatch");
     }
+
     this.stateTable = Array.from(s.stateTable);
     this.stateShapes = Array.from(s.stateShapes);
     this.stateShapes[0] = 0;
@@ -191,6 +210,7 @@ export class VoxelWorld {
     for (let id = 0; id < this.stateTable.length; id++) {
       this.stateMap.set(stateUniqueKey(this.stateTable[id], this.stateShapes[id]), id);
     }
+
     this.chunks.fill(null);
     for (const { ci, states } of s.chunks) this.chunks[ci] = Chunk.fromStates(states);
     const onDirty = this.onDirty;
@@ -205,6 +225,7 @@ export class VoxelWorld {
       this.chunks[ci] = null;
       if (onDirty) onDirty(ci);
     }
+
     this.stateTable = [0];
     this.stateShapes = [0];
     this.stateMap.clear();

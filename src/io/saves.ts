@@ -12,11 +12,14 @@ export const AUTOSAVE_NAME = "__auto";
 /** Reserved record name parking a borrowed world (gallery scene / shared build) across a dim-change reload. */
 export const PENDING_NAME = "__pending";
 
-const AUTOSAVE_DELAY_MS = 1500;
+/** Autosave writes are interval-throttled; 30 s is the floor (cheap on storage, safe on loss). */
+const MIN_AUTOSAVE_DELAY_MS = 30_000;
 
 interface SaveHooks {
   snapshot(): WorldSnapshot;
   restore(s: WorldSnapshot): void;
+  /** Fired after each successful autosave write (UI may surface it, throttled). */
+  onAutosaved?(): void;
 }
 
 const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
@@ -74,6 +77,9 @@ export class SaveStore {
   private autosaveTimer: ReturnType<typeof setTimeout> | undefined;
   /** While held, autosaves are suppressed: the world on screen is borrowed until the user edits. */
   private held = false;
+  /** User policy: master switch + write interval (Settings → Autosave). */
+  private autosaveEnabled = true;
+  private autosaveDelayMs = MIN_AUTOSAVE_DELAY_MS;
 
   constructor(hooks: SaveHooks) {
     this.hooks = hooks;
@@ -82,29 +88,48 @@ export class SaveStore {
     });
   }
 
+  /**
+   * Apply the user's autosave policy. Disabling cancels any pending write and
+   * also silences flush() — "off" means the user owns persistence entirely.
+   */
+  setAutosavePolicy(enabled: boolean, delayMs: number): void {
+    this.autosaveEnabled = enabled;
+    this.autosaveDelayMs = Math.max(MIN_AUTOSAVE_DELAY_MS, delayMs);
+    if (!enabled && this.autosaveTimer !== undefined) {
+      clearTimeout(this.autosaveTimer);
+      this.autosaveTimer = undefined;
+    }
+  }
+
   private db(): Promise<IDBDatabase> {
     this.dbPromise ??= openSavesDb();
     return this.dbPromise;
   }
-
   private async writeAutosave(): Promise<void> {
     if (this.held) return;
     try {
       const data = toArrayBuffer(encodeSnapshot(this.hooks.snapshot()));
       await idbPut(await this.db(), { name: AUTOSAVE_NAME, updatedAt: Date.now(), data });
+      this.hooks.onAutosaved?.();
     } catch (err) {
       console.warn("autosave failed", err);
     }
   }
 
-  /** Schedule a trailing-debounced autosave; never throws into edit paths. */
+  /**
+   * Interval-throttled autosave: the first dirty edit arms the timer and later
+   * edits never reset it, so a building session writes at most once per delay
+   * window and never goes unsaved longer than one window. Never throws into
+   * edit paths; tab-hide flush() covers quitting before the timer fires.
+   */
   autosaveSoon(): void {
-    if (this.held) return;
-    if (this.autosaveTimer !== undefined) clearTimeout(this.autosaveTimer);
+    if (this.held || !this.autosaveEnabled) return;
+    if (this.autosaveTimer !== undefined) return;
+
     this.autosaveTimer = setTimeout(() => {
       this.autosaveTimer = undefined;
       void this.writeAutosave();
-    }, AUTOSAVE_DELAY_MS);
+    }, this.autosaveDelayMs);
   }
 
   /** Cancel any pending autosave timer and write the autosave slot now (no-op while held). */
@@ -113,7 +138,7 @@ export class SaveStore {
       clearTimeout(this.autosaveTimer);
       this.autosaveTimer = undefined;
     }
-    if (this.held) return Promise.resolve();
+    if (this.held || !this.autosaveEnabled) return Promise.resolve();
     return this.writeAutosave();
   }
 

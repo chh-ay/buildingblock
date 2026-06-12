@@ -11,12 +11,12 @@ const emptyEntry = (): JournalEntry => ({ x: 0, y: 0, z: 0, key32: 0, shape: 0 }
 describe("EditJournal", () => {
   test("pack/unpack roundtrip at extremes", () => {
     const journal = new EditJournal();
-    journal.record(383, 127, 383, 0xffffffff, 6);
+    journal.record(383, 127, 383, 0xffffffff, 63);
     journal.record(0, 0, 0, 0, 0);
 
     const out = emptyEntry();
     journal.entryAt(0, out);
-    expect(out).toEqual({ x: 383, y: 127, z: 383, key32: 0xffffffff, shape: 6 });
+    expect(out).toEqual({ x: 383, y: 127, z: 383, key32: 0xffffffff, shape: 63 });
     journal.entryAt(1, out);
     expect(out).toEqual({ x: 0, y: 0, z: 0, key32: 0, shape: 0 });
   });

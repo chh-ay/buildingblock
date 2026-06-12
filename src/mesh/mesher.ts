@@ -60,13 +60,25 @@ import {
   CHUNK_SIZE,
   FACE_NORMAL,
   PAD,
+  SHAPE_CORNER_NXNZ,
+  SHAPE_CORNER_NXPZ,
+  SHAPE_CORNER_PXNZ,
+  SHAPE_CORNER_PXPZ,
   SHAPE_CUBE,
+  SHAPE_INNER_NXNZ,
+  SHAPE_INNER_NXPZ,
+  SHAPE_INNER_PXNZ,
+  SHAPE_INNER_PXPZ,
   SHAPE_RAMP_NX,
   SHAPE_RAMP_NZ,
   SHAPE_RAMP_PX,
   SHAPE_RAMP_PZ,
   SHAPE_SLAB_BOTTOM,
   SHAPE_SLAB_TOP,
+  SHAPE_VSLAB_NX,
+  SHAPE_VSLAB_NZ,
+  SHAPE_VSLAB_PX,
+  SHAPE_VSLAB_PZ,
 } from "../core/types";
 
 /** Normal axis id per face direction (0:+x 1:-x 2:+y 3:-y 4:+z 5:-z). */
@@ -138,7 +150,7 @@ for (let d = 0; d < 6; d++) {
 }
 
 /** One template face of a non-cube shape. */
-interface ShapeFace {
+export interface ShapeFace {
   /** Face id whose padded neighbor may cull this face, or -1 for interior faces. */
   cullFace: number;
   /** Packed i8x4 vertex normal (unit normal × 127). */
@@ -165,9 +177,11 @@ const SQRT1_2 = Math.SQRT1_2;
 /**
  * Template faces per shape id (SHAPE_CUBE is empty — full cubes go through the
  * greedy path). Slabs span half the cell along y; ramps are wedges whose top
- * surface rises along the named axis toward the named sign.
+ * surface rises along the named axis toward the named sign. Vertical slabs hug
+ * the named cell wall; outer corners carry the min(a, b) roof-hip height field
+ * and inner corners its max(a, b) complement. Exported for template-level tests.
  */
-const SHAPE_FACES: ShapeFace[][] = [];
+export const SHAPE_FACES: ShapeFace[][] = [];
 SHAPE_FACES[SHAPE_CUBE] = [];
 SHAPE_FACES[SHAPE_SLAB_BOTTOM] = [
   shapeFace(3, [0, -1, 0], [0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
@@ -214,6 +228,111 @@ SHAPE_FACES[SHAPE_RAMP_NZ] = [
   shapeFace(0, [1, 0, 0], [1, 0, 0, 1, 1, 0, 1, 0, 1]),
 ];
 
+// ── vertical half slabs ───────────────────────────────────────────────────────
+
+SHAPE_FACES[SHAPE_VSLAB_PX] = [
+  shapeFace(0, [1, 0, 0], [1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1]),
+  shapeFace(-1, [-1, 0, 0], [0.5, 0, 0, 0.5, 0, 1, 0.5, 1, 1, 0.5, 1, 0]),
+  shapeFace(2, [0, 1, 0], [0.5, 1, 0, 0.5, 1, 1, 1, 1, 1, 1, 1, 0]),
+  shapeFace(3, [0, -1, 0], [0.5, 0, 0, 1, 0, 0, 1, 0, 1, 0.5, 0, 1]),
+  shapeFace(4, [0, 0, 1], [0.5, 0, 1, 1, 0, 1, 1, 1, 1, 0.5, 1, 1]),
+  shapeFace(5, [0, 0, -1], [0.5, 0, 0, 0.5, 1, 0, 1, 1, 0, 1, 0, 0]),
+];
+SHAPE_FACES[SHAPE_VSLAB_NX] = [
+  shapeFace(1, [-1, 0, 0], [0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0]),
+  shapeFace(-1, [1, 0, 0], [0.5, 0, 0, 0.5, 1, 0, 0.5, 1, 1, 0.5, 0, 1]),
+  shapeFace(2, [0, 1, 0], [0, 1, 0, 0, 1, 1, 0.5, 1, 1, 0.5, 1, 0]),
+  shapeFace(3, [0, -1, 0], [0, 0, 0, 0.5, 0, 0, 0.5, 0, 1, 0, 0, 1]),
+  shapeFace(4, [0, 0, 1], [0, 0, 1, 0.5, 0, 1, 0.5, 1, 1, 0, 1, 1]),
+  shapeFace(5, [0, 0, -1], [0, 0, 0, 0, 1, 0, 0.5, 1, 0, 0.5, 0, 0]),
+];
+SHAPE_FACES[SHAPE_VSLAB_PZ] = [
+  shapeFace(4, [0, 0, 1], [0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1]),
+  shapeFace(-1, [0, 0, -1], [0, 0, 0.5, 0, 1, 0.5, 1, 1, 0.5, 1, 0, 0.5]),
+  shapeFace(2, [0, 1, 0], [0, 1, 0.5, 0, 1, 1, 1, 1, 1, 1, 1, 0.5]),
+  shapeFace(3, [0, -1, 0], [0, 0, 0.5, 1, 0, 0.5, 1, 0, 1, 0, 0, 1]),
+  shapeFace(0, [1, 0, 0], [1, 0, 0.5, 1, 1, 0.5, 1, 1, 1, 1, 0, 1]),
+  shapeFace(1, [-1, 0, 0], [0, 0, 0.5, 0, 0, 1, 0, 1, 1, 0, 1, 0.5]),
+];
+SHAPE_FACES[SHAPE_VSLAB_NZ] = [
+  shapeFace(5, [0, 0, -1], [0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0]),
+  shapeFace(-1, [0, 0, 1], [0, 0, 0.5, 1, 0, 0.5, 1, 1, 0.5, 0, 1, 0.5]),
+  shapeFace(2, [0, 1, 0], [0, 1, 0, 0, 1, 0.5, 1, 1, 0.5, 1, 1, 0]),
+  shapeFace(3, [0, -1, 0], [0, 0, 0, 1, 0, 0, 1, 0, 0.5, 0, 0, 0.5]),
+  shapeFace(0, [1, 0, 0], [1, 0, 0, 1, 1, 0, 1, 1, 0.5, 1, 0, 0.5]),
+  shapeFace(1, [-1, 0, 0], [0, 0, 0, 0, 0, 0.5, 0, 1, 0.5, 0, 1, 0]),
+];
+
+// ── outer corner wedges (top y = min of the two ramp height fields) ───────────
+
+SHAPE_FACES[SHAPE_CORNER_PXPZ] = [
+  shapeFace(3, [0, -1, 0], [0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+  shapeFace(0, [1, 0, 0], [1, 0, 0, 1, 1, 1, 1, 0, 1]),
+  shapeFace(4, [0, 0, 1], [0, 0, 1, 1, 0, 1, 1, 1, 1]),
+  shapeFace(-1, [0, SQRT1_2, -SQRT1_2], [0, 0, 0, 1, 1, 1, 1, 0, 0]),
+  shapeFace(-1, [-SQRT1_2, SQRT1_2, 0], [0, 0, 0, 0, 0, 1, 1, 1, 1]),
+];
+SHAPE_FACES[SHAPE_CORNER_NXPZ] = [
+  shapeFace(3, [0, -1, 0], [0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+  shapeFace(1, [-1, 0, 0], [0, 0, 0, 0, 0, 1, 0, 1, 1]),
+  shapeFace(4, [0, 0, 1], [0, 0, 1, 1, 0, 1, 0, 1, 1]),
+  shapeFace(-1, [0, SQRT1_2, -SQRT1_2], [0, 0, 0, 0, 1, 1, 1, 0, 0]),
+  shapeFace(-1, [SQRT1_2, SQRT1_2, 0], [1, 0, 0, 0, 1, 1, 1, 0, 1]),
+];
+SHAPE_FACES[SHAPE_CORNER_NXNZ] = [
+  shapeFace(3, [0, -1, 0], [0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+  shapeFace(1, [-1, 0, 0], [0, 0, 0, 0, 0, 1, 0, 1, 0]),
+  shapeFace(5, [0, 0, -1], [0, 0, 0, 0, 1, 0, 1, 0, 0]),
+  shapeFace(-1, [0, SQRT1_2, SQRT1_2], [0, 1, 0, 0, 0, 1, 1, 0, 1]),
+  shapeFace(-1, [SQRT1_2, SQRT1_2, 0], [0, 1, 0, 1, 0, 1, 1, 0, 0]),
+];
+SHAPE_FACES[SHAPE_CORNER_PXNZ] = [
+  shapeFace(3, [0, -1, 0], [0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+  shapeFace(0, [1, 0, 0], [1, 0, 1, 1, 0, 0, 1, 1, 0]),
+  shapeFace(5, [0, 0, -1], [0, 0, 0, 1, 1, 0, 1, 0, 0]),
+  shapeFace(-1, [-SQRT1_2, SQRT1_2, 0], [0, 0, 0, 0, 0, 1, 1, 1, 0]),
+  shapeFace(-1, [0, SQRT1_2, SQRT1_2], [0, 0, 1, 1, 0, 1, 1, 1, 0]),
+];
+
+// ── inner corner wedges (top y = max — the cube-minus-outer-corner complement) ─
+
+SHAPE_FACES[SHAPE_INNER_PXPZ] = [
+  shapeFace(3, [0, -1, 0], [0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+  shapeFace(0, [1, 0, 0], [1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1]),
+  shapeFace(4, [0, 0, 1], [0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1]),
+  shapeFace(1, [-1, 0, 0], [0, 0, 0, 0, 0, 1, 0, 1, 1]),
+  shapeFace(5, [0, 0, -1], [0, 0, 0, 1, 1, 0, 1, 0, 0]),
+  shapeFace(-1, [-SQRT1_2, SQRT1_2, 0], [0, 0, 0, 1, 1, 1, 1, 1, 0]),
+  shapeFace(-1, [0, SQRT1_2, -SQRT1_2], [0, 0, 0, 0, 1, 1, 1, 1, 1]),
+];
+SHAPE_FACES[SHAPE_INNER_NXPZ] = [
+  shapeFace(3, [0, -1, 0], [0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+  shapeFace(1, [-1, 0, 0], [0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0]),
+  shapeFace(4, [0, 0, 1], [0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1]),
+  shapeFace(0, [1, 0, 0], [1, 0, 0, 1, 1, 1, 1, 0, 1]),
+  shapeFace(5, [0, 0, -1], [0, 0, 0, 0, 1, 0, 1, 0, 0]),
+  shapeFace(-1, [SQRT1_2, SQRT1_2, 0], [1, 0, 0, 0, 1, 0, 0, 1, 1]),
+  shapeFace(-1, [0, SQRT1_2, -SQRT1_2], [1, 0, 0, 0, 1, 1, 1, 1, 1]),
+];
+SHAPE_FACES[SHAPE_INNER_NXNZ] = [
+  shapeFace(3, [0, -1, 0], [0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+  shapeFace(1, [-1, 0, 0], [0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0]),
+  shapeFace(5, [0, 0, -1], [0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0]),
+  shapeFace(0, [1, 0, 0], [1, 0, 1, 1, 0, 0, 1, 1, 0]),
+  shapeFace(4, [0, 0, 1], [0, 0, 1, 1, 0, 1, 0, 1, 1]),
+  shapeFace(-1, [SQRT1_2, SQRT1_2, 0], [0, 1, 0, 0, 1, 1, 1, 0, 1]),
+  shapeFace(-1, [0, SQRT1_2, SQRT1_2], [0, 1, 0, 1, 0, 1, 1, 1, 0]),
+];
+SHAPE_FACES[SHAPE_INNER_PXNZ] = [
+  shapeFace(3, [0, -1, 0], [0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+  shapeFace(0, [1, 0, 0], [1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1]),
+  shapeFace(5, [0, 0, -1], [0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0]),
+  shapeFace(1, [-1, 0, 0], [0, 0, 0, 0, 0, 1, 0, 1, 0]),
+  shapeFace(4, [0, 0, 1], [0, 0, 1, 1, 0, 1, 1, 1, 1]),
+  shapeFace(-1, [-SQRT1_2, SQRT1_2, 0], [0, 0, 1, 1, 1, 1, 1, 1, 0]),
+  shapeFace(-1, [0, SQRT1_2, SQRT1_2], [0, 0, 1, 1, 1, 0, 0, 1, 0]),
+];
+
 /** Growable geometry accumulator for one render bucket, reused across calls. */
 interface Builder {
   position: Float32Array;
@@ -255,21 +374,26 @@ const growBuilder = (b: Builder): void => {
   const position = new Float32Array(cap * 3);
   position.set(b.position);
   b.position = position;
+
   const normal = new Int8Array(cap * 4);
   normal.set(b.normal);
   b.normal = normal;
   b.normalWords = new Int32Array(normal.buffer);
+
   const color = new Uint8Array(cap * 4);
   color.set(b.color);
   b.color = color;
   b.colorWords = new Int32Array(color.buffer);
+
   const extra = new Uint8Array(cap * 4);
   extra.set(b.extra);
   b.extra = extra;
   b.extraWords = new Int32Array(extra.buffer);
+
   const index = new Uint32Array((cap * 3) >> 1);
   index.set(b.index);
   b.index = index;
+
   b.capacity = cap;
 };
 
@@ -347,6 +471,7 @@ const buildInteriorColumns = (
   let lastStateId = -1;
   let lastOpaque = 0;
   let lastCube = 1;
+
   for (let y = 0; y < CHUNK_SIZE; y++) {
     for (let z = 0; z < CHUNK_SIZE; z++) {
       let cellIndex = ORIGIN + y * (PAD * PAD) + z * PAD;
@@ -370,6 +495,7 @@ const buildInteriorColumns = (
         if (lastOpaque === 1) occluderRow |= 1 << x;
         if (v !== BOUNDARY) meshableRow |= 1 << x;
       }
+
       const column = ((z + 1) << T2_SHIFT) | (y + 1);
       columnOccluder[column] = occluderRow;
       columnMeshable[column] = meshableRow;
@@ -399,11 +525,13 @@ const buildInteriorColumnsWords = (
   let lastStateId = -1;
   let lastOpaque = 0;
   let lastCube = 1;
+
   for (let y = 0; y < CHUNK_SIZE; y++) {
     for (let z = 0; z < CHUNK_SIZE; z++) {
       const rowWordBase = ((y + 1) * (PAD * PAD) + (z + 1) * PAD) >> 1;
       let occluderRow = 0;
       let meshableRow = 0;
+
       const headWord = words[rowWordBase];
       const headCell = LITTLE_ENDIAN ? headWord >>> 16 : headWord & 0xffff;
       if (headCell !== AIR) {
@@ -423,6 +551,7 @@ const buildInteriorColumnsWords = (
           if (headCell !== BOUNDARY) meshableRow |= 1;
         }
       }
+
       for (let wi = 1; wi < 16; wi++) {
         const word = words[rowWordBase + wi];
         if (word === 0) continue;
@@ -478,6 +607,7 @@ const buildInteriorColumnsWords = (
         lastMeshablePair = meshablePair;
         lastPairShaped = pairShaped;
       }
+
       const tailWord = words[rowWordBase + 16];
       const tailCell = LITTLE_ENDIAN ? tailWord & 0xffff : tailWord >>> 16;
       if (tailCell !== AIR) {
@@ -497,6 +627,7 @@ const buildInteriorColumnsWords = (
           if (tailCell !== BOUNDARY) meshableRow |= 1 << 31;
         }
       }
+
       const column = ((z + 1) << T2_SHIFT) | (y + 1);
       columnOccluder[column] = occluderRow;
       columnMeshable[column] = meshableRow;
@@ -520,6 +651,7 @@ const deriveTransposedColumns = (family: Int32Array): void => {
     transpose32(transposeScratch);
     for (let x = 0; x < CHUNK_SIZE; x++) family[destBase + x] = transposeScratch[x];
   }
+
   for (let y = 0; y < CHUNK_SIZE; y++) {
     let any = 0;
     for (let z = 0; z < CHUNK_SIZE; z++) {
@@ -547,6 +679,7 @@ const classifyShellCell = (
 ): void => {
   if (v !== BOUNDARY && stateShapes[v] !== SHAPE_CUBE) return;
   const opaque = v === BOUNDARY ? 1 : classOpaque[stateTable[v] >>> 24] & 1;
+
   const columnX = ((pz + 1) << T2_SHIFT) | (py + 1);
   if (px >= 0 && px < CHUNK_SIZE) {
     if (opaque === 1) columnOccluder[columnX] |= 1 << px;
@@ -557,6 +690,7 @@ const classifyShellCell = (
     shellHighOccluder[columnX] = opaque;
     shellHighNonAir[columnX] = 1;
   }
+
   const columnY = (1 << AXIS_SHIFT) | ((pz + 1) << T2_SHIFT) | (px + 1);
   if (py >= 0 && py < CHUNK_SIZE) {
     if (opaque === 1) columnOccluder[columnY] |= 1 << py;
@@ -567,6 +701,7 @@ const classifyShellCell = (
     shellHighOccluder[columnY] = opaque;
     shellHighNonAir[columnY] = 1;
   }
+
   const columnZ = (2 << AXIS_SHIFT) | ((py + 1) << T2_SHIFT) | (px + 1);
   if (pz >= 0 && pz < CHUNK_SIZE) {
     if (opaque === 1) columnOccluder[columnZ] |= 1 << pz;
@@ -595,6 +730,7 @@ const buildShellTables = (
       }
     }
   }
+
   for (let y = 0; y < CHUNK_SIZE; y++) {
     for (const pz of [-1, CHUNK_SIZE]) {
       let cellIndex = (y + 1) * PAD * PAD + (pz + 1) * PAD;
@@ -626,6 +762,7 @@ const buildOccupancy = (
   shellHighOccluder.fill(0);
   shellLowNonAir.fill(0);
   shellHighNonAir.fill(0);
+
   const anyMeshable =
     (padded.byteOffset & 3) === 0
       ? buildInteriorColumnsWords(padded, stateTable, stateShapes, classOpaque)
@@ -883,6 +1020,7 @@ const mergeDirectionFaces = (
         ) {
           runWidth++;
         }
+
         const runMask = runWidth === 32 ? -1 : ((1 << runWidth) - 1) << u0;
         let runHeight = 1;
         expand: while (w0 + runHeight < CHUNK_SIZE) {
@@ -945,11 +1083,13 @@ const emitShapeFace = (
     pos[pi++] = y + corners[ci++];
     pos[pi++] = z + corners[ci++];
   }
+
   for (let k = 0; k < vertexCount; k++) {
     bld.normalWords[base + k] = face.normalWord;
     bld.colorWords[base + k] = colorWord;
     bld.extraWords[base + k] = extraWord;
   }
+
   const ind = bld.index;
   let ii = bld.indexCount;
   ind[ii++] = base;
@@ -960,6 +1100,7 @@ const emitShapeFace = (
     ind[ii++] = base + 2;
     ind[ii++] = base + 3;
   }
+
   bld.vertexCount += vertexCount;
   bld.indexCount = ii;
 };
@@ -982,9 +1123,11 @@ const emitShapedVoxels = (
     const z = (packed >>> 5) & 31;
     const y = (packed >>> 10) & 31;
     const stateId = packed >>> 15;
+
     const stateKey = stateTable[stateId];
     const cls = stateKey >>> 24;
     const bld = acquireBuilder(builders, classBucket[cls]);
+
     const colorWord = packBytes4(
       (stateKey >>> 16) & 0xff,
       (stateKey >>> 8) & 0xff,
@@ -997,6 +1140,7 @@ const emitShapedVoxels = (
       classEmissive[cls] === 0 ? 0 : 255,
       0,
     );
+
     const faces = SHAPE_FACES[stateShapes[stateId]];
     const cellIndex = ORIGIN + x + y * (PAD * PAD) + z * PAD;
     for (let f = 0; f < faces.length; f++) {
@@ -1049,6 +1193,7 @@ export const meshChunk = (
         emitted;
     }
   }
+
   emitted =
     emitShapedVoxels(
       padded,

@@ -8,6 +8,8 @@ import { AIR, FACE_NORMAL, inWorld, WORLD_SX, WORLD_SY, WORLD_SZ } from "../core
 import type { ToolId } from "../state";
 import type { EditSession, Ray, Tool, ToolEnv, ToolPointer } from "./api";
 
+// ── geometry helpers ──────────────────────────────────────────────────────────
+
 const DIM = Int32Array.of(WORLD_SX, WORLD_SY, WORLD_SZ);
 
 const clampInt = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
@@ -42,6 +44,8 @@ export const rayPlaneCell = (
   return true;
 };
 
+// ── rect-drag gesture ─────────────────────────────────────────────────────────
+
 interface RectOpts {
   adjacent: boolean;
   allowGround: boolean;
@@ -73,6 +77,7 @@ const createRectTool = (opts: RectOpts): Tool => {
     const u1 = Math.max(anchor[u], target[u]);
     const v0 = Math.min(anchor[v], target[v]);
     const v1 = Math.max(anchor[v], target[v]);
+
     const layers = opts.box ? h : 1;
     const need = (u1 - u0 + 1) * (v1 - v0 + 1) * layers * 3;
     if (buf.length < need) {
@@ -80,6 +85,7 @@ const createRectTool = (opts: RectOpts): Tool => {
       while (cap < need) cap <<= 1;
       buf = new Int32Array(cap);
     }
+
     let n = 0;
     const wantAir = opts.wantAir;
     for (let layer = 0; layer < layers; layer++) {
@@ -100,6 +106,7 @@ const createRectTool = (opts: RectOpts): Tool => {
         }
       }
     }
+
     count = n / 3;
     env.ghosts(buf, count);
   };
@@ -108,6 +115,7 @@ const createRectTool = (opts: RectOpts): Tool => {
     down(p: ToolPointer, env: ToolEnv): void {
       const hit = p.hit;
       if (!hit || (!opts.allowGround && hit.ground)) return;
+
       if (opts.adjacent) {
         const a = adjacentCell(hit);
         anchor[0] = a[0];
@@ -118,6 +126,7 @@ const createRectTool = (opts: RectOpts): Tool => {
         anchor[1] = hit.y;
         anchor[2] = hit.z;
       }
+
       axis = (hit.face >> 1) as 0 | 1 | 2;
       sign = hit.face & 1 ? -1 : 1;
       h = 1;
@@ -125,6 +134,7 @@ const createRectTool = (opts: RectOpts): Tool => {
       target[1] = anchor[1];
       target[2] = anchor[2];
       active = true;
+
       if (opts.instant) {
         // Instant anchor: the first cell lands on pointerdown for tactile feedback;
         // dragging extends the rect as a ghost preview committed on release.
@@ -133,11 +143,14 @@ const createRectTool = (opts: RectOpts): Tool => {
         const air = env.world.get(anchor[0], anchor[1], anchor[2]) === AIR;
         if (air === opts.wantAir) session.set(anchor[0], anchor[1], anchor[2], value);
       }
+
       env.hover(null);
       recompute(env);
     },
+
     move(p: ToolPointer, env: ToolEnv): void {
       if (!active) return;
+
       if (rayPlaneCell(p.ray, axis, anchor[axis], target)) {
         const u = (axis + 1) % 3;
         const v = (axis + 2) % 3;
@@ -146,27 +159,33 @@ const createRectTool = (opts: RectOpts): Tool => {
       }
       recompute(env);
     },
+
     up(_p: ToolPointer, env: ToolEnv): void {
       if (!active) return;
+
       active = false;
       const value = opts.toAir ? AIR : env.state();
       const gestureSession = session ?? env.begin();
       session = null;
       const end = count * 3;
       for (let i = 0; i < end; i += 3) gestureSession.set(buf[i], buf[i + 1], buf[i + 2], value);
+
       gestureSession.commit();
       env.ghosts(null);
       count = 0;
     },
+
     wheel(deltaY: number, env: ToolEnv): boolean {
       if (!opts.box || !active) return false;
       h = clampInt(h + (deltaY < 0 ? 1 : -1), 1, 64);
       recompute(env);
       return true;
     },
+
     hover(p: ToolPointer, env: ToolEnv): void {
       if (!active) env.hover(p.hit);
     },
+
     cancel(env: ToolEnv): void {
       session?.cancel();
       session = null;
@@ -177,6 +196,8 @@ const createRectTool = (opts: RectOpts): Tool => {
     },
   };
 };
+
+// ── pick & registry ───────────────────────────────────────────────────────────
 
 /** Eyedropper: reads the hit voxel's state on down; no gesture, no session. */
 const createPickTool = (): Tool => ({

@@ -63,3 +63,49 @@ export const plasmaMaterialDef = (): CustomMaterialDef => ({
     return material;
   },
 });
+
+// Registration order in main.ts is plasma, metal, water → class ids 4, 5, 6. The ids are
+// baked into saved worlds (packState cls byte), so new defs MUST append after these —
+// never reorder or remove.
+
+/** Opaque PBR metal: painted color with high metalness and a tight specular lobe. */
+export const metalMaterialDef = (): CustomMaterialDef => ({
+  name: "Metal",
+  opaque: true,
+  makeMaterial: () => {
+    const material = new MeshStandardNodeMaterial();
+
+    material.colorNode = linearVertexColor();
+    material.metalnessNode = float(0.9);
+    material.roughnessNode = float(0.28);
+
+    return material;
+  },
+});
+
+/** Animated translucent TSL water: gentle moving wave tint over the painted color. */
+export const waterMaterialDef = (): CustomMaterialDef => ({
+  name: "Water",
+  opaque: false,
+  makeMaterial: () => {
+    const material = new MeshStandardNodeMaterial();
+    const paintedColor = linearVertexColor();
+
+    // Two slow sine fields phase-shifted against each other read as drifting ripples.
+    const wavePosition = positionWorld.mul(0.8);
+    const wave = sin(wavePosition.x.add(time.mul(0.9)))
+      .add(sin(wavePosition.z.mul(1.4).add(time.mul(0.6))))
+      .mul(0.25)
+      .add(0.5);
+
+    material.colorNode = paintedColor.mul(mix(vec3(0.55, 0.75, 0.95), vec3(0.8, 1.0, 1.1), wave));
+    material.roughnessNode = float(0.1);
+    material.metalnessNode = float(0);
+    material.opacityNode = float(0.5).add(wave.mul(0.18));
+
+    material.transparent = true;
+    material.depthWrite = false;
+
+    return material;
+  },
+});

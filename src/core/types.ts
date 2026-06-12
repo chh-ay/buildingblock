@@ -110,7 +110,106 @@ export const SHAPE_RAMP_PX = 3;
 export const SHAPE_RAMP_NX = 4;
 export const SHAPE_RAMP_PZ = 5;
 export const SHAPE_RAMP_NZ = 6;
-export const SHAPE_COUNT = 7;
+// Vertical half-thickness slab flush against the named cell wall.
+export const SHAPE_VSLAB_PX = 7;
+export const SHAPE_VSLAB_NX = 8;
+export const SHAPE_VSLAB_PZ = 9;
+export const SHAPE_VSLAB_NZ = 10;
+// Outer corner wedge: top surface y = min(a, b) of the two ramp height fields,
+// rising toward the named corner (a quarter-pyramid for roof hips).
+export const SHAPE_CORNER_PXPZ = 11;
+export const SHAPE_CORNER_NXPZ = 12;
+export const SHAPE_CORNER_NXNZ = 13;
+export const SHAPE_CORNER_PXNZ = 14;
+// Inner corner wedge: top surface y = max(a, b) — the cube-minus-outer-corner
+// complement that closes the inside of an L-shaped roof.
+export const SHAPE_INNER_PXPZ = 15;
+export const SHAPE_INNER_NXPZ = 16;
+export const SHAPE_INNER_NXNZ = 17;
+export const SHAPE_INNER_PXNZ = 18;
+export const SHAPE_COUNT = 19;
+
+// ── shape registry ────────────────────────────────────────────────────────────
+
+/**
+ * One selectable shape family in the UI. Oriented families expose four concrete
+ * shape ids; the facing picker and the R hotkey cycle the `orientations` index,
+ * and "auto" mode derives the index from the camera's ground-plane look direction
+ * via `autoIndex(dx, dz)` (dx/dz point away from the camera).
+ */
+export interface ShapeFamily {
+  readonly label: string;
+  /** Concrete shape ids; single-entry families have no orientation picker. */
+  readonly orientations: readonly number[];
+  /** Facing-chip labels, paired with `orientations`. */
+  readonly orientationLabels?: readonly string[];
+  /** Facing-chip tooltips, paired with `orientations`. */
+  readonly orientationHints?: readonly string[];
+  /** Maps the camera look direction to an `orientations` index for auto mode. */
+  readonly autoIndex?: (dx: number, dz: number) => number;
+}
+
+/** Axis-aligned facing: away from the camera, dominant ground axis wins. */
+const axisAutoIndex = (dx: number, dz: number): number =>
+  Math.abs(dx) > Math.abs(dz) ? (dx >= 0 ? 0 : 1) : dz >= 0 ? 2 : 3;
+
+/** Diagonal facing: quadrant of the camera look direction. */
+const diagAutoIndex = (dx: number, dz: number): number =>
+  dx >= 0 ? (dz >= 0 ? 0 : 3) : dz >= 0 ? 1 : 2;
+
+const AXIS_LABELS = ["→", "←", "↓", "↑"] as const;
+const AXIS_HINTS = ["Toward +X", "Toward −X", "Toward +Z", "Toward −Z"] as const;
+const DIAG_LABELS = ["↘", "↙", "↖", "↗"] as const;
+const DIAG_HINTS = ["Toward +X +Z", "Toward −X +Z", "Toward −X −Z", "Toward +X −Z"] as const;
+
+export const SHAPE_FAMILIES: readonly ShapeFamily[] = [
+  { label: "Cube", orientations: [SHAPE_CUBE] },
+  { label: "Slab", orientations: [SHAPE_SLAB_BOTTOM] },
+  { label: "Top", orientations: [SHAPE_SLAB_TOP] },
+  {
+    label: "Ramp",
+    orientations: [SHAPE_RAMP_PX, SHAPE_RAMP_NX, SHAPE_RAMP_PZ, SHAPE_RAMP_NZ],
+    orientationLabels: AXIS_LABELS,
+    orientationHints: ["Rises toward +X", "Rises toward −X", "Rises toward +Z", "Rises toward −Z"],
+    autoIndex: axisAutoIndex,
+  },
+  {
+    label: "Panel",
+    orientations: [SHAPE_VSLAB_PX, SHAPE_VSLAB_NX, SHAPE_VSLAB_PZ, SHAPE_VSLAB_NZ],
+    orientationLabels: AXIS_LABELS,
+    orientationHints: AXIS_HINTS,
+    autoIndex: axisAutoIndex,
+  },
+  {
+    label: "Corner",
+    orientations: [SHAPE_CORNER_PXPZ, SHAPE_CORNER_NXPZ, SHAPE_CORNER_NXNZ, SHAPE_CORNER_PXNZ],
+    orientationLabels: DIAG_LABELS,
+    orientationHints: DIAG_HINTS,
+    autoIndex: diagAutoIndex,
+  },
+  {
+    label: "Inner",
+    orientations: [SHAPE_INNER_PXPZ, SHAPE_INNER_NXPZ, SHAPE_INNER_NXNZ, SHAPE_INNER_PXNZ],
+    orientationLabels: DIAG_LABELS,
+    orientationHints: DIAG_HINTS,
+    autoIndex: diagAutoIndex,
+  },
+];
+
+const FAMILY_OF_SHAPE = new Uint8Array(SHAPE_COUNT);
+const ORIENTATION_OF_SHAPE = new Uint8Array(SHAPE_COUNT);
+SHAPE_FAMILIES.forEach((family, familyIndex) => {
+  family.orientations.forEach((shape, orientationIndex) => {
+    FAMILY_OF_SHAPE[shape] = familyIndex;
+    ORIENTATION_OF_SHAPE[shape] = orientationIndex;
+  });
+});
+
+/** Family index that owns a concrete shape id (eyedropper inverse mapping). */
+export const shapeFamilyIndex = (shape: number): number => FAMILY_OF_SHAPE[shape] ?? 0;
+
+/** Position of a concrete shape id inside its family's `orientations`. */
+export const shapeOrientationIndex = (shape: number): number => ORIENTATION_OF_SHAPE[shape] ?? 0;
 
 /** Map-safe uniqueness key for (cls, rgb, shape) — exact below 2^53. */
 export const stateUniqueKey = (key32: number, shape: number): number => key32 + shape * 0x100000000;

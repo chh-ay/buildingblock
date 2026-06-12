@@ -4,7 +4,7 @@
  * Entries are packed into segmented Uint32Array pairs (segments of 65536 entries,
  * two u32s per entry) so recording never allocates per-record and never grows by
  * copying. Coordinates are bounded by the world preset cap of 384x128x384, so
- * x and z fit in 9 bits and y fits in 8; shape ids fit in 3 bits (SHAPE_COUNT=7).
+ * x and z fit in 9 bits and y fits in 8; shape ids get 6 bits (room for 64 shapes).
  */
 
 export interface JournalEntry {
@@ -65,7 +65,7 @@ export class EditJournal {
       this.segments[segmentIndex] = segment;
     }
     const offset = (index & SEGMENT_MASK) * 2;
-    segment[offset] = (x & 511) | ((y & 255) << 9) | ((z & 511) << 17) | ((shape & 7) << 26);
+    segment[offset] = (x & 511) | ((y & 255) << 9) | ((z & 511) << 17) | ((shape & 63) << 26);
     segment[offset + 1] = key32 >>> 0;
     this.entryCount = index + 1;
   }
@@ -81,7 +81,7 @@ export class EditJournal {
     out.x = a & 511;
     out.y = (a >>> 9) & 255;
     out.z = (a >>> 17) & 511;
-    out.shape = (a >>> 26) & 7;
+    out.shape = (a >>> 26) & 63;
     out.key32 = (segment[offset + 1] as number) >>> 0;
     return out;
   }

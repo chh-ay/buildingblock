@@ -81,10 +81,10 @@ export interface PeerBadge {
 
 export interface AppState {
   tool: Signal<ToolId>;
-  /** Block shape choice: 0 cube, 1 slab, 2 top slab, 3 ramp. */
-  shape: Signal<number>;
-  /** Ramp orientation: -1 auto-faces away from the camera, else SHAPE_RAMP_PX..NZ (3..6). */
-  rampFacing: Signal<number>;
+  /** Shape family choice: index into SHAPE_FAMILIES (0 cube .. 6 inner corner). */
+  family: Signal<number>;
+  /** Orientation within the family: -1 auto-faces away from the camera, else 0..3 into `orientations`. */
+  facing: Signal<number>;
   /** Current paint color, 0xRRGGBB. */
   color: Signal<number>;
   /** Current material class id. */
@@ -117,6 +117,10 @@ export interface AppState {
   toast: Signal<string>;
   /** Gameplay sound effects toggle (persisted). */
   sound: Signal<boolean>;
+  /** Autosave master switch (persisted). */
+  autosave: Signal<boolean>;
+  /** Autosave interval in seconds (persisted); 30 s floor. */
+  autosaveSec: Signal<number>;
   /** True while a build replay is running; input is blocked and a banner shows. */
   replaying: Signal<boolean>;
 }
@@ -128,8 +132,8 @@ export const DEFAULT_SWATCHES: readonly number[] = [
 
 export const createAppState = (): AppState => ({
   tool: signal<ToolId>("place"),
-  shape: signal(0),
-  rampFacing: signal(-1),
+  family: signal(0),
+  facing: signal(-1),
   color: signal(0xd94f3d),
   cls: signal(0),
   swatches: signal(DEFAULT_SWATCHES),
@@ -157,6 +161,8 @@ export const createAppState = (): AppState => ({
   roster: signal<readonly PeerBadge[]>([]),
   toast: signal(""),
   sound: signal(true),
+  autosave: signal(true),
+  autosaveSec: signal(30),
   replaying: signal(false),
 });
 
@@ -189,4 +195,8 @@ export interface AppActions {
   openGallery(): Promise<void>;
   /** Rebuild the world brick-by-brick from the session journal. */
   startReplay(): void;
+  /** Leave the current collab room (no-op when solo). */
+  leaveRoom(): void;
+  /** Re-copy the current room's invite link. */
+  copyInvite(): Promise<void>;
 }

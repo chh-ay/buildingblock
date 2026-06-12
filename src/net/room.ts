@@ -54,6 +54,18 @@ export interface NetCallbacks {
   onPeerCursor(peerId: string, cursor: PresenceCursor | null): void;
 }
 
+export interface JoinOptions {
+  /**
+   * True when this client just created the room (Share → Build together):
+   * it is canonical immediately. Joiners arriving via a #r= link never claim
+   * authority on a timer while alone — the snapshot wait only starts once a
+   * peer actually connects (public-relay handshakes routinely beat 2.5 s).
+   * A lonely joiner who starts building claims authority through its first
+   * broadcast instead.
+   */
+  creator: boolean;
+}
+
 /** Live room handle returned by {@link joinBuildRoom}. */
 export interface NetSession {
   readonly roomId: string;
@@ -94,8 +106,11 @@ const CURSOR_BYTES = 12;
 /** Sentinel face value marking a null (hidden) cursor on the wire. */
 const CURSOR_NULL_FACE = 255;
 
-/** How long a joiner waits for a snapshot before deciding it is the room creator. */
+/** How long a connected joiner waits for a snapshot before deciding the room is dead. */
 const SNAP_WAIT_MS = 2500;
+
+/** Most deferred local edit cells held while unsynced; past this we claim authority instead. */
+const PENDING_CELL_CAP = 8192;
 
 const APP_ID = "buildingblock-v1";
 
@@ -198,8 +213,16 @@ const parseCursor = (bytes: Uint8Array): PresenceCursor | null | undefined => {
  * snapshot; whoever already holds the canonical world (`synced`) answers with
  * a direct "snap". If no snapshot arrives within {@link SNAP_WAIT_MS} of the
  * last opportunity, this peer considers itself the canonical source.
+ *
+ * Snapshots are only accepted while a request is outstanding (see
+ * `snapPending`), and local edits made during the wait are deferred so they
+ * can be re-applied on top of the incoming snapshot instead of forking it.
  */
-export const joinBuildRoom = (roomId: string, callbacks: NetCallbacks): NetSession => {
+export const joinBuildRoom = (
+  roomId: string,
+  callbacks: NetCallbacks,
+  opts: JoinOptions,
+): NetSession => {
   const room = joinRoom({ appId: APP_ID }, roomId);
 
   /**
@@ -212,10 +235,46 @@ export const joinBuildRoom = (roomId: string, callbacks: NetCallbacks): NetSessi
   let left = false;
   let syncTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /**
+   * True while a snapshot request is outstanding: armed by `requestSnapshot`,
+   * cleared when a snapshot applies or the creator-detection timeout claims
+   * authority. "snap" payloads arriving while this is false are unsolicited
+   * and ignored.
+   */
+  let snapPending = false;
+
+  /**
+   * Local edits made while unsynced with peers present, already packed into
+   * wire records (packed keys are palette-independent, so they survive a
+   * snapshot swap). On snapshot apply they are re-applied on top through the
+   * applyRemoteEdits callback and then broadcast; on timeout or cap overflow
+   * they are only broadcast — the local world already holds them.
+   */
+  let pendingBatches: Uint8Array[] = [];
+  let pendingCells = 0;
+
+  /** Hand back (and clear) the deferred local batches. */
+  const takePending = (): Uint8Array[] => {
+    const batches = pendingBatches;
+    pendingBatches = [];
+    pendingCells = 0;
+    return batches;
+  };
+
+  const sendEditBytes = (bytes: Uint8Array): void => {
+    editAction.send(bytes).catch((err) => {
+      console.warn("net: edit send failed", err);
+    });
+  };
+
+  /** Become canonical: stop waiting for a snapshot and broadcast any deferred local edits. */
   const markSynced = (): void => {
     synced = true;
+    snapPending = false;
     clearTimeout(syncTimer);
     syncTimer = undefined;
+
+    for (const batch of takePending()) sendEditBytes(batch);
   };
 
   /** (Re)arm the creator-detection timer: no snap within the window → we are canonical. */
@@ -237,11 +296,21 @@ export const joinBuildRoom = (roomId: string, callbacks: NetCallbacks): NetSessi
 
   const snapAction = room.makeAction<Uint8Array>("snap", {
     onMessage: (data) => {
-      if (left || synced) return; // only the first snapshot counts
+      if (left || synced || !snapPending) return; // only a solicited first snapshot counts
       const bytes = asBytes(data);
       if (bytes === null) return;
+
+      const deferred = takePending(); // before markSynced, which would broadcast without re-applying
       markSynced();
       safely("restoreSnapshot", () => callbacks.restoreSnapshot(bytes));
+
+      // The snapshot replaced the world, wiping local edits made during the
+      // wait; replay them on top through the remote-edit path, then broadcast.
+      for (const batch of deferred) {
+        const cells = parseEdits(batch);
+        if (cells !== null) safely("applyRemoteEdits", () => callbacks.applyRemoteEdits(cells));
+        sendEditBytes(batch);
+      }
     },
   });
 
@@ -270,6 +339,8 @@ export const joinBuildRoom = (roomId: string, callbacks: NetCallbacks): NetSessi
   });
 
   const requestSnapshot = (target?: string): void => {
+    if (!synced) snapPending = true;
+
     needSnapAction.send(null, target === undefined ? undefined : { target }).catch((err) => {
       console.warn("net: needsnap send failed", err);
     });
@@ -298,19 +369,38 @@ export const joinBuildRoom = (roomId: string, callbacks: NetCallbacks): NetSessi
   };
 
   notifyRoster(); // initial roster ([])
-  requestSnapshot(); // joiner asks right away (no-op while nobody is connected)
-  armSyncTimer();
+
+  if (opts.creator) {
+    markSynced(); // the room is born from this world; nothing to wait for
+  } else {
+    requestSnapshot(); // joiner asks right away (no-op while nobody is connected)
+  }
 
   return {
     roomId,
     selfId,
     broadcastEdits: (cells, stateTable, stateShapes) => {
       if (left) return;
+
+      // Split-brain guard: while a snapshot may still replace this world,
+      // edits sent now would be built on state about to vanish. Defer them
+      // (packed) until the snapshot race resolves.
+      if (!synced && Object.keys(room.getPeers()).length > 0) {
+        const count = (cells.length / 5) | 0;
+        if (pendingCells + count <= PENDING_CELL_CAP) {
+          if (count > 0) {
+            pendingBatches.push(packEdits(cells, stateTable, stateShapes));
+            pendingCells += count;
+          }
+          return;
+        }
+        // Cap blown: this peer is clearly the one building — fall through to
+        // claim authority (markSynced flushes the backlog) and send live.
+      }
+
       markSynced(); // first local edit makes this world authoritative
       if (cells.length === 0) return;
-      editAction.send(packEdits(cells, stateTable, stateShapes)).catch((err) => {
-        console.warn("net: edit send failed", err);
-      });
+      sendEditBytes(packEdits(cells, stateTable, stateShapes));
     },
     sendCursor: (cursor) => {
       if (left) return;

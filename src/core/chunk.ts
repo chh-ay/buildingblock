@@ -10,6 +10,8 @@ export class Chunk {
   private data16: Uint16Array | null = null;
   private nonAirCount = 0;
 
+  // ── reads ───────────────────────────────────────────────────────────────────
+
   /** Number of non-air voxels in this chunk. */
   get nonAir(): number {
     return this.nonAirCount;
@@ -26,6 +28,8 @@ export class Chunk {
     return d16 ? d16[vi] : this.palette[this.data[vi]];
   }
 
+  // ── writes ──────────────────────────────────────────────────────────────────
+
   /** Write `stateId` at `vi`; returns whether the voxel changed. */
   setState(vi: number, stateId: number): boolean {
     const d16 = this.data16;
@@ -37,8 +41,10 @@ export class Chunk {
       else if (stateId === AIR) this.nonAirCount--;
       return true;
     }
+
     const prevId = this.palette[this.data[vi]];
     if (prevId === stateId) return false;
+
     let pi = this.paletteMap.get(stateId);
     if (pi === undefined) {
       if (this.palette.length >= MAX_PALETTE) {
@@ -52,11 +58,15 @@ export class Chunk {
       this.palette.push(stateId);
       this.paletteMap.set(stateId, pi);
     }
+
     this.data[vi] = pi;
+
     if (prevId === AIR) this.nonAirCount++;
     else if (stateId === AIR) this.nonAirCount--;
     return true;
   }
+
+  // ── bulk I/O ────────────────────────────────────────────────────────────────
 
   /** Write all 32768 resolved stateIds into `out`. */
   readStates(out: Uint16Array): void {
@@ -65,6 +75,7 @@ export class Chunk {
       out.set(d16);
       return;
     }
+
     const data = this.data;
     const palette = this.palette;
     for (let i = 0; i < CHUNK_VOLUME; i++) out[i] = palette[data[i]];
@@ -77,6 +88,7 @@ export class Chunk {
     const palette = c.palette;
     const map = c.paletteMap;
     let nonAir = 0;
+
     for (let i = 0; i < CHUNK_VOLUME; i++) {
       const s = states[i];
       if (s !== AIR) nonAir++;
@@ -94,16 +106,20 @@ export class Chunk {
       }
       data[i] = pi;
     }
+
     if (nonAir === 0) return null;
     c.nonAirCount = nonAir;
     return c;
   }
+
+  // ── palette maintenance ─────────────────────────────────────────────────────
 
   /** Drop unused palette entries and remap stored indices; index 0 stays AIR. */
   private compact(): void {
     const data = this.data;
     const usage = new Uint32Array(MAX_PALETTE);
     for (let i = 0; i < CHUNK_VOLUME; i++) usage[data[i]]++;
+
     const oldPalette = this.palette;
     const palette: number[] = [AIR];
     const map = new Map<number, number>([[AIR, 0]]);
@@ -115,6 +131,7 @@ export class Chunk {
       map.set(id, palette.length);
       palette.push(id);
     }
+
     for (let i = 0; i < CHUNK_VOLUME; i++) data[i] = lut[data[i]];
     this.palette = palette;
     this.paletteMap = map;
@@ -126,6 +143,7 @@ export class Chunk {
     const data = this.data;
     const palette = this.palette;
     for (let i = 0; i < CHUNK_VOLUME; i++) d16[i] = palette[data[i]];
+
     this.data16 = d16;
     this.palette = [AIR];
     this.paletteMap.clear();

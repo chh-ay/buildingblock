@@ -9,17 +9,30 @@ import {
   PAD_VOLUME,
   packState,
   pIndex,
+  SHAPE_CORNER_NXNZ,
+  SHAPE_CORNER_NXPZ,
+  SHAPE_CORNER_PXNZ,
+  SHAPE_CORNER_PXPZ,
+  SHAPE_COUNT,
   SHAPE_CUBE,
+  SHAPE_INNER_NXNZ,
+  SHAPE_INNER_NXPZ,
+  SHAPE_INNER_PXNZ,
+  SHAPE_INNER_PXPZ,
   SHAPE_RAMP_NX,
   SHAPE_RAMP_NZ,
   SHAPE_RAMP_PX,
   SHAPE_RAMP_PZ,
   SHAPE_SLAB_BOTTOM,
   SHAPE_SLAB_TOP,
+  SHAPE_VSLAB_NX,
+  SHAPE_VSLAB_NZ,
+  SHAPE_VSLAB_PX,
+  SHAPE_VSLAB_PZ,
   stateClass,
   stateRgb,
 } from "../src/core/types";
-import { meshChunk } from "../src/mesh/mesher";
+import { meshChunk, SHAPE_FACES } from "../src/mesh/mesher";
 
 const mulberry32 = (a: number) => () => {
   a |= 0;
@@ -47,7 +60,10 @@ const table = Uint32Array.of(
 );
 const cubeShapes = new Uint8Array(table.length);
 
-/** Shaped fixtures: ids 1 cube, 2 slabBottom, 3 slabTop, 4..7 ramps PX/NX/PZ/NZ, 8 glass slabBottom. */
+/**
+ * Shaped fixtures: ids 1 cube, 2 slabBottom, 3 slabTop, 4..7 ramps PX/NX/PZ/NZ, 8 glass
+ * slabBottom, 9..12 vslabs PX/NX/PZ/NZ, 13..16 outer corners, 17..20 inner corners.
+ */
 const shapedTable = Uint32Array.of(
   0,
   matteRed,
@@ -58,6 +74,18 @@ const shapedTable = Uint32Array.of(
   matteRed,
   matteRed,
   glassCyan,
+  matteRed,
+  matteRed,
+  matteRed,
+  matteRed,
+  matteRed,
+  matteRed,
+  matteRed,
+  matteRed,
+  matteRed,
+  matteRed,
+  matteRed,
+  matteRed,
 );
 const shapedShapes = Uint8Array.of(
   0,
@@ -69,6 +97,18 @@ const shapedShapes = Uint8Array.of(
   SHAPE_RAMP_PZ,
   SHAPE_RAMP_NZ,
   SHAPE_SLAB_BOTTOM,
+  SHAPE_VSLAB_PX,
+  SHAPE_VSLAB_NX,
+  SHAPE_VSLAB_PZ,
+  SHAPE_VSLAB_NZ,
+  SHAPE_CORNER_PXPZ,
+  SHAPE_CORNER_NXPZ,
+  SHAPE_CORNER_NXNZ,
+  SHAPE_CORNER_PXNZ,
+  SHAPE_INNER_PXPZ,
+  SHAPE_INNER_NXPZ,
+  SHAPE_INNER_NXNZ,
+  SHAPE_INNER_PXNZ,
 );
 
 const pad = (): Uint16Array => new Uint16Array(PAD_VOLUME);
@@ -628,6 +668,61 @@ describe("meshChunk", () => {
       for (const f of faces) expect(faceWithin(f, [5, 5, 5], [6, 6, 6])).toBe(true);
       const slopes = faces.filter((f) => f.normal.filter((c) => c !== 0).length === 2);
       expect(slopes.length).toBe(1);
+    }
+  });
+
+  test("vslab/corner/inner templates: in-cell verts, wall-planar cull faces, outward normals", () => {
+    expect(SHAPE_FACES.length).toBe(SHAPE_COUNT);
+
+    for (let shape = SHAPE_VSLAB_PX; shape <= SHAPE_INNER_PXNZ; shape++) {
+      const faces = SHAPE_FACES[shape];
+      expect(faces.length).toBeGreaterThanOrEqual(5);
+
+      for (const face of faces) {
+        const verts: number[][] = [];
+        for (let k = 0; k < face.vertexCount; k++) {
+          verts.push([face.positions[k * 3], face.positions[k * 3 + 1], face.positions[k * 3 + 2]]);
+        }
+        for (const v of verts) {
+          for (const c of v) {
+            expect(c).toBeGreaterThanOrEqual(0);
+            expect(c).toBeLessThanOrEqual(1);
+          }
+        }
+
+        if (face.cullFace < 0) continue;
+        const axis = face.cullFace >> 1;
+        const wall = (face.cullFace & 1) === 0 ? 1 : 0;
+        for (const v of verts) expect(v[axis]).toBe(wall);
+
+        const e1 = verts[1].map((c, i) => c - verts[0][i]);
+        const e2 = verts[2].map((c, i) => c - verts[0][i]);
+        const dot =
+          (e1[1] * e2[2] - e1[2] * e2[1]) * FACE_NORMAL[face.cullFace * 3] +
+          (e1[2] * e2[0] - e1[0] * e2[2]) * FACE_NORMAL[face.cullFace * 3 + 1] +
+          (e1[0] * e2[1] - e1[1] * e2[0]) * FACE_NORMAL[face.cullFace * 3 + 2];
+        expect(dot).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  test("vslab/corner/inner lone voxels emit in-cell CCW faces with expected area", () => {
+    const sq = Math.SQRT2;
+    const counts = [6, 6, 6, 6, 5, 5, 5, 5, 7, 7, 7, 7];
+    const areas = [4, 4, 4, 4, 2 + sq, 2 + sq, 2 + sq, 2 + sq, 4 + sq, 4 + sq, 4 + sq, 4 + sq];
+
+    for (let i = 0; i < 12; i++) {
+      const p = pad();
+      setP(p, 5, 5, 5, 9 + i);
+      const g = meshShaped(p)[0];
+      expect(g).not.toBeNull();
+      if (g === null) continue;
+
+      checkWinding(g);
+      const faces = facesOf(g);
+      expect(faces.length).toBe(counts[i]);
+      expect(faces.reduce((s, f) => s + f.area, 0)).toBeCloseTo(areas[i], 5);
+      for (const f of faces) expect(faceWithin(f, [5, 5, 5], [6, 6, 6])).toBe(true);
     }
   });
 
