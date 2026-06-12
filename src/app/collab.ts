@@ -177,7 +177,7 @@ export const createCollab = (deps: CollabDeps): Collab => {
 
     net.sendCursor({
       x: hit.x,
-      y: hit.ground ? 0 : hit.y,
+      y: hit.ground ? hit.y + 1 : hit.y,
       z: hit.z,
       face: hit.face,
       tool: TOOL_WIRE_IDS[state.tool()],

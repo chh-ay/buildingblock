@@ -4,8 +4,8 @@
  * - touch: a quick tap acts with the active tool; any drag is camera navigation.
  * - wheel during an active gesture is offered to the tool first (box height) and swallowed if used.
  */
-import { raycastGround, raycastVoxel } from "../core/raycast";
-import { SHAPE_FAMILIES } from "../core/types";
+import { raycastPlane, raycastVoxel } from "../core/raycast";
+import { SHAPE_FAMILIES, WORLD_SY } from "../core/types";
 import type { AppState, ToolId } from "../state";
 import type { Ray, Tool, ToolEnv, ToolPointer } from "./api";
 
@@ -39,22 +39,42 @@ const RAY_RANGE = 640;
 export const initInput = (deps: InputDeps): void => {
   const { canvas, state, env } = deps;
   let gesture: Tool | null = null;
+  let lastPlaneY = 8;
   let touchStart: { x: number; y: number; t: number; id: number } | null = null;
   let touchMoved = false;
 
   const pointerOf = (e: PointerEvent): ToolPointer => {
     const ray = deps.pickRay(e.clientX, e.clientY);
-    const hit =
-      raycastVoxel(
-        (x, y, z) => env.world.get(x, y, z),
-        ray.ox,
-        ray.oy,
-        ray.oz,
-        ray.dx,
-        ray.dy,
-        ray.dz,
-        RAY_RANGE,
-      ) ?? raycastGround(ray.ox, ray.oy, ray.oz, ray.dx, ray.dy, ray.dz);
+    const planeY = Math.max(0, state.buildPlane());
+
+    const voxelHit = raycastVoxel(
+      (x, y, z) => env.world.get(x, y, z),
+      ray.ox,
+      ray.oy,
+      ray.oz,
+      ray.dx,
+      ray.dy,
+      ray.dz,
+      RAY_RANGE,
+    );
+    const planeHit = raycastPlane(ray.ox, ray.oy, ray.oz, ray.dx, ray.dy, ray.dz, planeY);
+
+    // With an elevated work plane, the nearer surface wins — otherwise terrain
+    // behind the plane would swallow mid-air placements.
+    let hit = voxelHit ?? planeHit;
+    if (voxelHit && planeHit && state.buildPlane() >= 0) {
+      const dv = Math.hypot(
+        voxelHit.x + 0.5 - ray.ox,
+        voxelHit.y + 0.5 - ray.oy,
+        voxelHit.z + 0.5 - ray.oz,
+      );
+      const dp = Math.hypot(
+        planeHit.x + 0.5 - ray.ox,
+        planeHit.y + 1 - ray.oy,
+        planeHit.z + 0.5 - ray.oz,
+      );
+      if (dp < dv) hit = planeHit;
+    }
     return { ray, hit };
   };
 
@@ -184,6 +204,31 @@ export const initInput = (deps: InputDeps): void => {
       if (family.orientations.length > 1) {
         const facing = state.facing();
         state.facing.set(facing >= family.orientations.length - 1 ? -1 : facing + 1);
+      }
+    } else if (k === "[" || k === "]") {
+      // Work plane: nudge the mid-air build height; below 0 turns it off.
+      const step = k === "]" ? 1 : -1;
+      const current = state.buildPlane();
+      const next = current < 0 ? (step > 0 ? 1 : -1) : current + step;
+
+      if (next < 0) {
+        state.buildPlane.set(-1);
+        state.toast.set("Build height off — placing on the ground");
+      } else {
+        const clamped = Math.min(WORLD_SY - 1, next);
+        state.buildPlane.set(clamped);
+        state.toast.set(`Build height ${clamped}`);
+      }
+    } else if (k === "\\") {
+      // Toggle the work plane, remembering the last height.
+      const current = state.buildPlane();
+      if (current >= 0) {
+        lastPlaneY = current;
+        state.buildPlane.set(-1);
+        state.toast.set("Build height off — placing on the ground");
+      } else {
+        state.buildPlane.set(lastPlaneY);
+        state.toast.set(`Build height ${lastPlaneY}`);
       }
     } else if (k === "g") {
       state.grid.set(!state.grid());

@@ -121,6 +121,8 @@ export interface AppState {
   autosave: Signal<boolean>;
   /** Autosave interval in seconds (persisted); 30 s floor. */
   autosaveSec: Signal<number>;
+  /** Elevated build-plane height; -1 = build on the baseplate (off). */
+  buildPlane: Signal<number>;
   /** True while a build replay is running; input is blocked and a banner shows. */
   replaying: Signal<boolean>;
 }
@@ -163,6 +165,7 @@ export const createAppState = (): AppState => ({
   sound: signal(true),
   autosave: signal(true),
   autosaveSec: signal(30),
+  buildPlane: signal(-1),
   replaying: signal(false),
 });
 

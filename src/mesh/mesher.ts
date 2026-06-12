@@ -29,11 +29,17 @@
  *   visiblePositive     = (opaqueMeshable      & ~((occluder >>> 1) | (shellHighOccluder << 31)))
  *                       | (transparentMeshable & ~((nonAir   >>> 1) | (shellHighNonAir   << 31)))
  *
- * and the mirrored form with `<< 1` plus the low shell bits for -normal. The
- * same shift aligns the eight surrounding columns with the face layer, so the
- * four AO corner terms per face are single bit extractions, and faces whose
- * aligned neighborhood is empty skip the corner math entirely. Visible bits
- * are transposed into per-layer row masks (work proportional to visible
+ * and the mirrored form with `<< 1` plus the low shell bits for -normal. Two
+ * sparse refinements run per surviving bit against the padded data: a
+ * transparent face whose ahead-cell is a non-opaque cube (the
+ * `transparentMeshable & nonAirAhead & ~occluderAhead` residue) stays visible
+ * only across a material-class change — same class + cube shape on both sides
+ * is a watertight merge — and any face whose ahead-cell is an opaque shaped
+ * voxel covering the shared wall with a full quad (COVER_FACES) is dropped.
+ * The same shift aligns the eight surrounding columns with the face layer, so
+ * the four AO corner terms per face are single bit extractions, and faces
+ * whose aligned neighborhood is empty skip the corner math entirely. Visible
+ * bits are transposed into per-layer row masks (work proportional to visible
  * faces, found via count-trailing-zeros), where the greedy maximal-rectangle
  * merge consumes them. AO is packed next to the stateId so merging only joins
  * cells with identical shading.
@@ -45,11 +51,13 @@
  * as endian-correct 32-bit words.
  *
  * Block shapes: only SHAPE_CUBE voxels participate in the column masks — a
- * non-cube voxel acts as air toward its neighbors (no occlusion, no AO, no
- * nonAir). The occupancy scan collects non-cube voxels into a scratch list;
- * after the greedy pass they are emitted per voxel from the SHAPE_FACES
- * templates. A template face lying on a cell-boundary plane is culled only
- * against BOUNDARY or an opaque-class full cube behind that plane, while
+ * non-cube voxel acts as air toward its neighbors (no AO, no nonAir, and
+ * occlusion only through COVER_FACES). The occupancy scan collects non-cube
+ * voxels into a scratch list; after the greedy pass they are emitted per
+ * voxel from the SHAPE_FACES templates. A template face lying on a
+ * cell-boundary plane is culled against BOUNDARY, an opaque neighbor whose
+ * shape fully covers that plane (COVER_FACES), or a same-class same-shape
+ * translucent neighbor sharing the boundary profile (MERGEABLE_FACES);
  * interior faces (slab mid-planes, ramp slopes) always draw.
  */
 
@@ -64,6 +72,7 @@ import {
   SHAPE_CORNER_NXPZ,
   SHAPE_CORNER_PXNZ,
   SHAPE_CORNER_PXPZ,
+  SHAPE_COUNT,
   SHAPE_CUBE,
   SHAPE_INNER_NXNZ,
   SHAPE_INNER_NXPZ,
@@ -332,6 +341,78 @@ SHAPE_FACES[SHAPE_INNER_PXNZ] = [
   shapeFace(-1, [-SQRT1_2, SQRT1_2, 0], [0, 0, 1, 1, 1, 1, 1, 1, 0]),
   shapeFace(-1, [0, SQRT1_2, SQRT1_2], [0, 0, 1, 1, 1, 0, 0, 1, 0]),
 ];
+
+/**
+ * Per-shape bitmask (bit = face id) of faces whose boundary profile fully covers the
+ * shared wall when the neighbor holds the SAME shape — used to merge same-class
+ * translucent voxels. Corner/inner wedges never merge; unlisted shapes default to 0.
+ */
+const MERGEABLE_FACES = new Uint8Array(SHAPE_COUNT);
+MERGEABLE_FACES[SHAPE_CUBE] = 0b111111;
+MERGEABLE_FACES[SHAPE_SLAB_BOTTOM] = 0b110011;
+MERGEABLE_FACES[SHAPE_SLAB_TOP] = 0b110011;
+MERGEABLE_FACES[SHAPE_VSLAB_PX] = 0b111100;
+MERGEABLE_FACES[SHAPE_VSLAB_NX] = 0b111100;
+MERGEABLE_FACES[SHAPE_VSLAB_PZ] = 0b001111;
+MERGEABLE_FACES[SHAPE_VSLAB_NZ] = 0b001111;
+MERGEABLE_FACES[SHAPE_RAMP_PX] = 0b110000;
+MERGEABLE_FACES[SHAPE_RAMP_NX] = 0b110000;
+MERGEABLE_FACES[SHAPE_RAMP_PZ] = 0b000011;
+MERGEABLE_FACES[SHAPE_RAMP_NZ] = 0b000011;
+
+/**
+ * Per-shape bitmask (bit = face id) of boundary planes that are FULL quads: when the
+ * voxel is opaque, such a plane occludes the neighbor's facing geometry exactly like
+ * an opaque cube wall. Corner wedge walls are triangles — only their bottom covers.
+ * Together with EMPTY_FACES this classifies every boundary plane: full bit, empty
+ * bit, or neither (partial coverage).
+ */
+export const COVER_FACES = new Uint8Array(SHAPE_COUNT);
+COVER_FACES[SHAPE_CUBE] = 0b111111;
+COVER_FACES[SHAPE_SLAB_BOTTOM] = 0b001000;
+COVER_FACES[SHAPE_SLAB_TOP] = 0b000100;
+COVER_FACES[SHAPE_RAMP_PX] = 0b001001;
+COVER_FACES[SHAPE_RAMP_NX] = 0b001010;
+COVER_FACES[SHAPE_RAMP_PZ] = 0b011000;
+COVER_FACES[SHAPE_RAMP_NZ] = 0b101000;
+COVER_FACES[SHAPE_VSLAB_PX] = 0b000001;
+COVER_FACES[SHAPE_VSLAB_NX] = 0b000010;
+COVER_FACES[SHAPE_VSLAB_PZ] = 0b010000;
+COVER_FACES[SHAPE_VSLAB_NZ] = 0b100000;
+COVER_FACES[SHAPE_CORNER_PXPZ] = 0b001000;
+COVER_FACES[SHAPE_CORNER_NXPZ] = 0b001000;
+COVER_FACES[SHAPE_CORNER_NXNZ] = 0b001000;
+COVER_FACES[SHAPE_CORNER_PXNZ] = 0b001000;
+COVER_FACES[SHAPE_INNER_PXPZ] = 0b011001;
+COVER_FACES[SHAPE_INNER_NXPZ] = 0b011010;
+COVER_FACES[SHAPE_INNER_NXNZ] = 0b101010;
+COVER_FACES[SHAPE_INNER_PXNZ] = 0b101001;
+
+/**
+ * Per-shape bitmask (bit = face id) of boundary planes the shape leaves COMPLETELY
+ * open — no geometry touches that wall (a slope or top reaching the plane only along
+ * an edge counts as open). Exported for seam validation; the mesher itself never
+ * culls toward these.
+ */
+export const EMPTY_FACES = new Uint8Array(SHAPE_COUNT);
+EMPTY_FACES[SHAPE_SLAB_BOTTOM] = 0b000100;
+EMPTY_FACES[SHAPE_SLAB_TOP] = 0b001000;
+EMPTY_FACES[SHAPE_RAMP_PX] = 0b000110;
+EMPTY_FACES[SHAPE_RAMP_NX] = 0b000101;
+EMPTY_FACES[SHAPE_RAMP_PZ] = 0b100100;
+EMPTY_FACES[SHAPE_RAMP_NZ] = 0b010100;
+EMPTY_FACES[SHAPE_VSLAB_PX] = 0b000010;
+EMPTY_FACES[SHAPE_VSLAB_NX] = 0b000001;
+EMPTY_FACES[SHAPE_VSLAB_PZ] = 0b100000;
+EMPTY_FACES[SHAPE_VSLAB_NZ] = 0b010000;
+EMPTY_FACES[SHAPE_CORNER_PXPZ] = 0b100110;
+EMPTY_FACES[SHAPE_CORNER_NXPZ] = 0b100101;
+EMPTY_FACES[SHAPE_CORNER_NXNZ] = 0b010101;
+EMPTY_FACES[SHAPE_CORNER_PXNZ] = 0b010110;
+EMPTY_FACES[SHAPE_INNER_PXPZ] = 0b000100;
+EMPTY_FACES[SHAPE_INNER_NXPZ] = 0b000100;
+EMPTY_FACES[SHAPE_INNER_NXNZ] = 0b000100;
+EMPTY_FACES[SHAPE_INNER_PXNZ] = 0b000100;
 
 /** Growable geometry accumulator for one render bucket, reused across calls. */
 interface Builder {
@@ -775,7 +856,13 @@ const buildOccupancy = (
 };
 
 /** Fills faceRowMask / faceKeys with the visible faces (and their AO) for direction d. */
-const computeDirectionFaces = (padded: Uint16Array, d: number): void => {
+const computeDirectionFaces = (
+  padded: Uint16Array,
+  stateTable: Uint32Array,
+  stateShapes: Uint8Array,
+  classOpaque: Uint8Array,
+  d: number,
+): void => {
   const normalAxis = NORMAL_AXIS[d];
   const uAxis = TANGENT_U_AXIS[d];
   const wAxis = TANGENT_W_AXIS[d];
@@ -787,6 +874,8 @@ const computeDirectionFaces = (padded: Uint16Array, d: number): void => {
   const columnStrideU = swapTangents ? 1 << T2_SHIFT : 1;
   const columnStrideW = swapTangents ? 1 : 1 << T2_SHIFT;
   const axisBase = normalAxis << AXIS_SHIFT;
+  const neighborOffset = positive ? strideN : -strideN;
+  const coverBit = d ^ 1;
 
   faceRowMask.fill(0);
   for (let t2 = 0; t2 < CHUNK_SIZE; t2++) {
@@ -799,16 +888,19 @@ const computeDirectionFaces = (padded: Uint16Array, d: number): void => {
       const opaqueMeshable = meshable & occluder;
       const transparentMeshable = meshable & ~occluder;
       let visible: number;
+      let classCheck: number;
       if (positive) {
         const occluderAhead = (occluder >>> 1) | (shellHighOccluder[column] << 31);
         const nonAirAhead = (nonAir >>> 1) | (shellHighNonAir[column] << 31);
         visible = (opaqueMeshable & ~occluderAhead) | (transparentMeshable & ~nonAirAhead);
+        classCheck = transparentMeshable & nonAirAhead & ~occluderAhead;
       } else {
         const occluderBehind = (occluder << 1) | shellLowOccluder[column];
         const nonAirBehind = (nonAir << 1) | shellLowNonAir[column];
         visible = (opaqueMeshable & ~occluderBehind) | (transparentMeshable & ~nonAirBehind);
+        classCheck = transparentMeshable & nonAirBehind & ~occluderBehind;
       }
-      if (visible === 0) continue;
+      if ((visible | classCheck) === 0) continue;
 
       let occluderUm = 0;
       let occluderUp = 0;
@@ -877,10 +969,36 @@ const computeDirectionFaces = (padded: Uint16Array, d: number): void => {
       const columnOrigin = ORIGIN + u * strideU + w * strideW;
       const cellBase = (w << 5) | u;
       const faceBit = 1 << u;
+
+      // Translucent faces against a non-opaque cube neighbor: keep only across a
+      // class change (same class + cube shape on both sides ⇒ watertight merge).
+      while (classCheck !== 0) {
+        const layer = 31 - Math.clz32(classCheck & -classCheck);
+        classCheck &= classCheck - 1;
+        const cellIndex = columnOrigin + layer * strideN;
+        const neighbor = padded[cellIndex + neighborOffset];
+        if (stateTable[padded[cellIndex]] >>> 24 !== stateTable[neighbor] >>> 24) {
+          visible |= 1 << layer;
+        }
+      }
+
       while (visible !== 0) {
         const layer = 31 - Math.clz32(visible & -visible);
         visible &= visible - 1;
-        const stateId = padded[columnOrigin + layer * strideN];
+        const cellIndex = columnOrigin + layer * strideN;
+        const stateId = padded[cellIndex];
+
+        // An opaque shaped neighbor whose facing boundary plane is a full quad
+        // occludes this face exactly like an opaque cube would.
+        const neighbor = padded[cellIndex + neighborOffset];
+        if (
+          neighbor !== AIR &&
+          ((COVER_FACES[stateShapes[neighbor]] >> coverBit) & 1) === 1 &&
+          classOpaque[stateTable[neighbor] >>> 24] === 1
+        ) {
+          continue;
+        }
+
         let aoPack = 0xff;
         if (((aoNeeded >> layer) & 1) === 1) {
           const um = (occluderUm >> layer) & 1;
@@ -1141,7 +1259,9 @@ const emitShapedVoxels = (
       0,
     );
 
-    const faces = SHAPE_FACES[stateShapes[stateId]];
+    const shape = stateShapes[stateId];
+    const mergeable = classOpaque[cls] === 0 ? MERGEABLE_FACES[shape] : 0;
+    const faces = SHAPE_FACES[shape];
     const cellIndex = ORIGIN + x + y * (PAD * PAD) + z * PAD;
     for (let f = 0; f < faces.length; f++) {
       const face = faces[f];
@@ -1150,8 +1270,18 @@ const emitShapedVoxels = (
         if (
           neighbor === BOUNDARY ||
           (neighbor !== AIR &&
-            stateShapes[neighbor] === SHAPE_CUBE &&
+            ((COVER_FACES[stateShapes[neighbor]] >> (face.cullFace ^ 1)) & 1) === 1 &&
             classOpaque[stateTable[neighbor] >>> 24] === 1)
+        ) {
+          continue;
+        }
+
+        // Same-class, same-shape translucent neighbor covering this wall: merge.
+        if (
+          ((mergeable >> face.cullFace) & 1) === 1 &&
+          neighbor !== AIR &&
+          stateShapes[neighbor] === shape &&
+          stateTable[neighbor] >>> 24 === cls
         ) {
           continue;
         }
@@ -1187,7 +1317,7 @@ export const meshChunk = (
 
   if (anyMeshable === 1) {
     for (let d = 0; d < 6; d++) {
-      computeDirectionFaces(padded, d);
+      computeDirectionFaces(padded, stateTable, stateShapes, classOpaque, d);
       emitted =
         mergeDirectionFaces(d, stateTable, classBucket, classGloss, classEmissive, builders) ||
         emitted;

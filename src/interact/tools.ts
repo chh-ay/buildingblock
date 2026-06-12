@@ -14,9 +14,9 @@ const DIM = Int32Array.of(WORLD_SX, WORLD_SY, WORLD_SZ);
 
 const clampInt = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
 
-/** Cell adjacent to a hit along its face normal; ground hits map to the baseplate cell at y=0. */
+/** Cell adjacent to a hit along its face normal; plane hits map to the cell atop the plane. */
 export const adjacentCell = (hit: RayHit): [number, number, number] => {
-  if (hit.ground) return [hit.x, 0, hit.z];
+  if (hit.ground) return [hit.x, hit.y + 1, hit.z];
   const f = hit.face * 3;
   return [hit.x + FACE_NORMAL[f], hit.y + FACE_NORMAL[f + 1], hit.z + FACE_NORMAL[f + 2]];
 };

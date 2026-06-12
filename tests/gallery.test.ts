@@ -7,8 +7,8 @@ import { VoxelWorld } from "../src/core/world";
 import { decodeSnapshot, encodeSnapshot } from "../src/io/codec";
 
 describe("gallery scenes", () => {
-  test("registry has six uniquely-named scenes", () => {
-    expect(GALLERY_SCENES.length).toBe(6);
+  test("registry has nine uniquely-named scenes", () => {
+    expect(GALLERY_SCENES.length).toBe(9);
     const ids = new Set(GALLERY_SCENES.map((s) => s.id));
     expect(ids.size).toBe(GALLERY_SCENES.length);
     for (const scene of GALLERY_SCENES) {

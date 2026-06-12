@@ -99,9 +99,12 @@ export const stateRgb = (key: number): number => key & 0xffffff;
 /**
  * Per-state geometry shape, stored in a table parallel to the state keys.
  * Semantics for meshing:
- * - Only SHAPE_CUBE voxels enter the greedy path and occlude neighbors / cast AO.
- * - Non-cube voxels are emitted per-voxel from templates; their cell-boundary faces
- *   are culled only against opaque full cubes (or BOUNDARY), interior faces always draw.
+ * - Only SHAPE_CUBE voxels enter the greedy path and cast AO.
+ * - An opaque voxel occludes across a cell wall its shape covers with a full quad
+ *   (every cube wall, a bottom slab's NY plane, a vslab's flush wall, …).
+ * - Translucent voxels also cull faces shared with a same-class, same-shape neighbor
+ *   whose boundary profiles coincide (cube walls, slab sides, ramp flanks).
+ * - Non-cube voxels are emitted per-voxel from templates; interior faces always draw.
  */
 export const SHAPE_CUBE = 0;
 export const SHAPE_SLAB_BOTTOM = 1;

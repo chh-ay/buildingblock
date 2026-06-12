@@ -6,14 +6,35 @@
  */
 export {
   MaterialClass,
+  SHAPE_CORNER_NXNZ,
+  SHAPE_CORNER_NXPZ,
+  SHAPE_CORNER_PXNZ,
+  SHAPE_CORNER_PXPZ,
   SHAPE_CUBE,
+  SHAPE_INNER_NXNZ,
+  SHAPE_INNER_NXPZ,
+  SHAPE_INNER_PXNZ,
+  SHAPE_INNER_PXPZ,
   SHAPE_RAMP_NX,
   SHAPE_RAMP_NZ,
   SHAPE_RAMP_PX,
   SHAPE_RAMP_PZ,
   SHAPE_SLAB_BOTTOM,
   SHAPE_SLAB_TOP,
+  SHAPE_VSLAB_NX,
+  SHAPE_VSLAB_NZ,
+  SHAPE_VSLAB_PX,
+  SHAPE_VSLAB_PZ,
 } from "../../src/core/types";
+
+/**
+ * Runtime-registered material classes, by boot registration order in main.ts
+ * (plasma, metal, water — appended after the four builtins). The ids are baked
+ * into published .bbk files, so this order is append-only.
+ */
+export const CLS_PLASMA = 4;
+export const CLS_METAL = 5;
+export const CLS_WATER = 6;
 
 export interface SceneCtx {
   readonly sx: number;

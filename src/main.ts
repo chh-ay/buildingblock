@@ -241,6 +241,7 @@ const boot = async (): Promise<void> => {
   const post = new PostPipeline(renderer, scene, cameraRig.camera);
   state.bloom.sub((enabled) => post.setBloom(enabled));
   state.grid.sub((visible) => environment.setGridVisible(visible));
+  state.buildPlane.sub((y) => environment.setBuildPlane(y));
   state.shadows.sub((enabled) => lights.setShadowsEnabled(enabled));
   state.shadowRes.sub((size) => lights.setShadowResolution(size));
   state.renderer.sub((preference) => {

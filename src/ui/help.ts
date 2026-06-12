@@ -22,6 +22,8 @@ const KEYBOARD: readonly (readonly [readonly string[], string])[] = [
   [["Esc"], "Cancel gesture"],
   [["F"], "Focus block / frame build"],
   [["R"], "Rotate block"],
+  [["[", "]"], "Build height up/down"],
+  [["\\"], "Toggle build plane"],
   [["G"], "Toggle grid"],
   [["F3"], "Perf HUD"],
   [["?"], "Help"],

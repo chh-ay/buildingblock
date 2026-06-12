@@ -124,23 +124,29 @@ export const raycastVoxel = (
   }
 };
 
-/** Intersect a downward ray with the y=0 baseplate; returns a ground RayHit or null. */
-export const raycastGround = (
+/**
+ * Intersect a downward ray with the horizontal build plane at `planeY` (the
+ * baseplate when 0). The hit reports the cell just below the plane with an
+ * upward face, so placement lands AT `planeY` — mid-air when elevated.
+ */
+export const raycastPlane = (
   ox: number,
   oy: number,
   oz: number,
   dx: number,
   dy: number,
   dz: number,
+  planeY = 0,
 ): RayHit | null => {
   if (dy >= 0) return null;
+  if (planeY < 0 || planeY >= WORLD_SY) return null;
 
-  const t = -oy / dy;
+  const t = (planeY - oy) / dy;
   if (t <= 0) return null;
 
   const x = Math.floor(ox + dx * t);
   const z = Math.floor(oz + dz * t);
   if (x < 0 || x >= WORLD_SX || z < 0 || z >= WORLD_SZ) return null;
 
-  return { x, y: -1, z, face: 2, ground: true };
+  return { x, y: planeY - 1, z, face: 2, ground: true };
 };

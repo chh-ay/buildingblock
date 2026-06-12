@@ -21,6 +21,8 @@ import type { SkyState } from "./renderer";
 
 export interface Environment {
   setGridVisible(visible: boolean): void;
+  /** Show the elevated work-plane grid at height y; -1 hides it. */
+  setBuildPlane(y: number): void;
   /** Regrade the sky palette and move the sun/moon disc. */
   setSky(sky: SkyState): void;
 }
@@ -68,6 +70,15 @@ export const createEnvironment = (scene: Scene): Environment => {
   chunkGridMaterial.transparent = true;
   chunkGridMaterial.opacity = 0.5;
 
+  // Elevated work plane: same lattice as the unit grid, tinted so mid-air
+  // placement height is unmistakable. Hidden until a build height is set.
+  const buildPlaneGrid = new GridHelper(WORLD_SX, WORLD_SX, 0x57c8e8, 0x2e7d96);
+  buildPlaneGrid.visible = false;
+  const buildPlaneMaterial = buildPlaneGrid.material as LineBasicMaterial;
+  buildPlaneMaterial.transparent = true;
+  buildPlaneMaterial.opacity = 0.35;
+  buildPlaneMaterial.depthWrite = false;
+
   const bounds = new Box3Helper(
     new Box3(
       new Vector3(-WORLD_SX / 2, 0, -WORLD_SZ / 2),
@@ -75,13 +86,17 @@ export const createEnvironment = (scene: Scene): Environment => {
     ),
     0x2e3340,
   );
-  scene.add(unitGrid, chunkGrid, bounds);
+  scene.add(unitGrid, chunkGrid, buildPlaneGrid, bounds);
 
   return {
     setGridVisible: (visible) => {
       unitGrid.visible = visible;
       chunkGrid.visible = visible;
       bounds.visible = visible;
+    },
+    setBuildPlane: (y) => {
+      buildPlaneGrid.visible = y >= 0;
+      buildPlaneGrid.position.y = Math.max(0, y) + 0.008;
     },
     setSky: (sky) => {
       const azimuth = (sky.azimuthDeg * Math.PI) / 180;

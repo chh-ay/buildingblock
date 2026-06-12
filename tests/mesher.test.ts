@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { buildPadded } from "../src/core/padded";
 import type { BucketGeometry, ChunkGeometry } from "../src/core/types";
 import {
   AIR,
+  appendClass,
   BOUNDARY,
   builtinClassTable,
   CHUNK_SIZE,
+  cIndex,
   FACE_NORMAL,
   PAD_VOLUME,
   packState,
@@ -32,7 +35,14 @@ import {
   stateClass,
   stateRgb,
 } from "../src/core/types";
+import { VoxelWorld } from "../src/core/world";
 import { meshChunk, SHAPE_FACES } from "../src/mesh/mesher";
+
+/** FNV-1a over a byte view; used to snapshot geometry arrays. */
+const fnv1a = (h: number, bytes: Uint8Array): number => {
+  for (let i = 0; i < bytes.length; i++) h = Math.imul(h ^ bytes[i], 0x01000193);
+  return h >>> 0;
+};
 
 const mulberry32 = (a: number) => () => {
   a |= 0;
@@ -129,6 +139,47 @@ const meshShaped = (p: Uint16Array): ChunkGeometry =>
     classes.bucket,
     classes.gloss,
     classes.emissive,
+  );
+
+/** Water is an appended translucent class (id 4): the merge rule keys on class, not id. */
+const waterClasses = appendClass(classes, { opaque: false, bucket: 1 });
+const waterBlue = packState(4, 0x3060ff);
+const waterTeal = packState(4, 0x30e0c0);
+
+/**
+ * Water-merge fixtures: ids 1 water cube blue, 2 water cube teal, 3 glass cube,
+ * 4 water slabBottom, 5 glass slabBottom, 6 water rampPX, 7 water cornerPXPZ.
+ */
+const waterTable = Uint32Array.of(
+  0,
+  waterBlue,
+  waterTeal,
+  glassCyan,
+  waterBlue,
+  glassCyan,
+  waterBlue,
+  waterBlue,
+);
+const waterShapes = Uint8Array.of(
+  0,
+  SHAPE_CUBE,
+  SHAPE_CUBE,
+  SHAPE_CUBE,
+  SHAPE_SLAB_BOTTOM,
+  SHAPE_SLAB_BOTTOM,
+  SHAPE_RAMP_PX,
+  SHAPE_CORNER_PXPZ,
+);
+
+const meshWater = (p: Uint16Array): ChunkGeometry =>
+  meshChunk(
+    p,
+    waterTable,
+    waterShapes,
+    waterClasses.opaque,
+    waterClasses.bucket,
+    waterClasses.gloss,
+    waterClasses.emissive,
   );
 
 /** Brute-force occlusion at a padded-local coordinate. */
@@ -614,14 +665,14 @@ describe("meshChunk", () => {
     for (const f of faces) expect(faceWithin(f, [5, 5, 5], [6, 5.5, 6])).toBe(true);
   });
 
-  test("slab over cube: slab bottom culled, cube top kept", () => {
+  test("slab over cube: slab bottom and covered cube top both culled", () => {
     const p = pad();
     setP(p, 5, 5, 5, 1);
     setP(p, 5, 6, 5, 2);
     const geo = meshShaped(p);
     const faces = facesOf(geo[0]);
-    expect(faces.length).toBe(11);
-    expect(findBoxFace(faces, [0, 1, 0], [5, 6, 5], [6, 6, 6])).toBeDefined();
+    expect(faces.length).toBe(10);
+    expect(findBoxFace(faces, [0, 1, 0], [5, 6, 5], [6, 6, 6])).toBeUndefined();
     expect(findBoxFace(faces, [0, -1, 0], [5, 6, 5], [6, 6, 6])).toBeUndefined();
   });
 
@@ -743,7 +794,7 @@ describe("meshChunk", () => {
     }
   });
 
-  test("cube surrounded by 6 slabs still emits all 6 faces", () => {
+  test("cube surrounded by 6 slabs keeps every face except the covered top", () => {
     const p = pad();
     setP(p, 5, 5, 5, 1);
     setP(p, 4, 5, 5, 2);
@@ -753,13 +804,182 @@ describe("meshChunk", () => {
     setP(p, 5, 5, 4, 2);
     setP(p, 5, 5, 6, 2);
     const faces = facesOf(meshShaped(p)[0]);
-    // 6 cube faces + 4 lateral slabs x5 + slab above x5 + slab below x6.
-    expect(faces.length).toBe(37);
+    // 5 cube faces (top covered by the slab above) + 4 lateral slabs x5 + slab above x5
+    // + slab below x6.
+    expect(faces.length).toBe(36);
     for (let d = 0; d < 6; d++) {
       const normal = [FACE_NORMAL[d * 3], FACE_NORMAL[d * 3 + 1], FACE_NORMAL[d * 3 + 2]];
       const cubeFace = findBoxFace(faces, normal, [5, 5, 5], [6, 6, 6]);
+      if (d === 2) {
+        expect(cubeFace).toBeUndefined();
+        continue;
+      }
       expect(cubeFace).toBeDefined();
       if (cubeFace !== undefined) expect(cubeFace.area).toBeCloseTo(1, 5);
     }
+  });
+
+  test("corner wedge beside a cube does not cover the cube's facing wall", () => {
+    const p = pad();
+    setP(p, 5, 5, 5, 13);
+    setP(p, 6, 5, 5, 1);
+    const faces = facesOf(meshShaped(p)[0]);
+    expect(findBoxFace(faces, [-1, 0, 0], [6, 5, 5], [6, 6, 6])).toBeDefined();
+  });
+
+  test("ramp's full +x wall covers the cube face it leans on", () => {
+    const p = pad();
+    setP(p, 5, 5, 5, 4);
+    setP(p, 6, 5, 5, 1);
+    const faces = facesOf(meshShaped(p)[0]);
+    expect(findBoxFace(faces, [-1, 0, 0], [6, 5, 5], [6, 6, 6])).toBeUndefined();
+    expect(findBoxFace(faces, [1, 0, 0], [6, 5, 5], [6, 6, 6])).toBeUndefined();
+    // 4 remaining ramp faces + 5 remaining cube faces.
+    expect(faces.length).toBe(9);
+  });
+
+  test("vslab covers only its flush wall; the open side culls nothing", () => {
+    const p = pad();
+    setP(p, 4, 5, 5, 1);
+    setP(p, 5, 5, 5, 9);
+    setP(p, 6, 5, 5, 1);
+    const faces = facesOf(meshShaped(p)[0]);
+    // Flush +x wall: both the vslab face and the right cube's -x face vanish.
+    expect(findBoxFace(faces, [-1, 0, 0], [6, 5, 5], [6, 6, 6])).toBeUndefined();
+    expect(findBoxFace(faces, [1, 0, 0], [6, 5, 5], [6, 5.5, 6])).toBeUndefined();
+    // Open -x side: the left cube keeps its +x face, the vslab its -x face.
+    expect(findBoxFace(faces, [1, 0, 0], [5, 4, 5], [5, 6, 6])).toBeDefined();
+    expect(findBoxFace(faces, [-1, 0, 0], [5.5, 5, 5], [5.5, 6, 6])).toBeDefined();
+  });
+
+  test("lone water cube keeps all 6 faces", () => {
+    const p = pad();
+    setP(p, 5, 5, 5, 1);
+    const geo = meshWater(p);
+    expect(geo[0]).toBeNull();
+    expect(quadsOf(geo[1]).length).toBe(6);
+  });
+
+  test("same-state water cube pair: shared faces gone, outer faces merge to 6 quads", () => {
+    const p = pad();
+    setP(p, 5, 5, 5, 1);
+    setP(p, 6, 5, 5, 1);
+    const quads = quadsOf(meshWater(p)[1]);
+    expect(quads.length).toBe(6);
+    expect(quads.reduce((s, q) => s + q.area, 0)).toBe(10);
+  });
+
+  test("two-tone water cube pair merges: 10 quads, none on the shared plane", () => {
+    const p = pad();
+    setP(p, 5, 5, 5, 1);
+    setP(p, 6, 5, 5, 2);
+    const quads = quadsOf(meshWater(p)[1]);
+    expect(quads.length).toBe(10);
+    expect(quads.filter((q) => q.pos.every((c) => c[0] === 6)).length).toBe(0);
+  });
+
+  test("water cube beside glass cube keeps both boundary faces: 12 quads", () => {
+    const p = pad();
+    setP(p, 5, 5, 5, 1);
+    setP(p, 6, 5, 5, 3);
+    const quads = quadsOf(meshWater(p)[1]);
+    expect(quads.length).toBe(12);
+    expect(quads.filter((q) => q.pos.every((c) => c[0] === 6)).length).toBe(2);
+  });
+
+  test("row of water bottom slabs drops internal sides, keeps the perimeter", () => {
+    const p = pad();
+    for (let x = 5; x <= 8; x++) setP(p, x, 5, 5, 4);
+    const faces = facesOf(meshWater(p)[1]);
+    // 4 slabs x6 faces - 3 internal walls x2.
+    expect(faces.length).toBe(18);
+    expect(findBoxFace(faces, [-1, 0, 0], [5, 5, 5], [5, 5.5, 6])).toBeDefined();
+    expect(findBoxFace(faces, [1, 0, 0], [9, 5, 5], [9, 5.5, 6])).toBeDefined();
+    expect(findBoxFace(faces, [1, 0, 0], [6, 5, 5], [6, 5.5, 6])).toBeUndefined();
+    expect(findBoxFace(faces, [-1, 0, 0], [6, 5, 5], [6, 5.5, 6])).toBeUndefined();
+  });
+
+  test("water slab beside glass slab keeps both boundary faces", () => {
+    const p = pad();
+    setP(p, 5, 5, 5, 4);
+    setP(p, 6, 5, 5, 5);
+    const faces = facesOf(meshWater(p)[1]);
+    expect(faces.length).toBe(12);
+    expect(findBoxFace(faces, [1, 0, 0], [6, 5, 5], [6, 5.5, 6])).toBeDefined();
+    expect(findBoxFace(faces, [-1, 0, 0], [6, 5, 5], [6, 5.5, 6])).toBeDefined();
+  });
+
+  test("water rampPX pair merges flank faces along z, stays apart along x", () => {
+    const alongZ = pad();
+    setP(alongZ, 5, 5, 5, 6);
+    setP(alongZ, 5, 5, 6, 6);
+    expect(facesOf(meshWater(alongZ)[1]).length).toBe(8);
+
+    const alongX = pad();
+    setP(alongX, 5, 5, 5, 6);
+    setP(alongX, 6, 5, 5, 6);
+    expect(facesOf(meshWater(alongX)[1]).length).toBe(10);
+  });
+
+  test("water corner wedge pair never merges", () => {
+    const p = pad();
+    setP(p, 5, 5, 5, 7);
+    setP(p, 5, 5, 6, 7);
+    expect(facesOf(meshWater(p)[1]).length).toBe(10);
+  });
+
+  test("water sheet spanning a chunk border emits no faces on the border plane", () => {
+    const world = new VoxelWorld();
+    const water = world.internState(4, 0x3060ff, SHAPE_CUBE);
+    for (let x = 28; x < 36; x++) {
+      for (let z = 4; z < 8; z++) world.set(x, 5, z, water);
+    }
+
+    const wTable = Uint32Array.from(world.stateTable);
+    const wShapes = Uint8Array.from(world.stateShapes);
+    const meshAt = (ci: number): ChunkGeometry =>
+      meshChunk(
+        buildPadded(world, ci),
+        wTable,
+        wShapes,
+        waterClasses.opaque,
+        waterClasses.bucket,
+        waterClasses.gloss,
+        waterClasses.emissive,
+      );
+
+    const left = quadsOf(meshAt(cIndex(0, 0, 0))[1]);
+    const right = quadsOf(meshAt(cIndex(1, 0, 0))[1]);
+    expect(left.length).toBeGreaterThan(0);
+    expect(right.length).toBeGreaterThan(0);
+    expect(left.filter((q) => q.d === 0 && q.pos.every((c) => c[0] === 32)).length).toBe(0);
+    expect(right.filter((q) => q.d === 1 && q.pos.every((c) => c[0] === 0)).length).toBe(0);
+  });
+
+  test("all-opaque fixture meshes byte-identically to the pre-merge snapshot", () => {
+    const rand = mulberry32(4242);
+    const p = pad();
+    for (let y = 0; y < CHUNK_SIZE; y++) {
+      for (let z = 0; z < CHUNK_SIZE; z++) {
+        for (let x = 0; x < CHUNK_SIZE; x++) {
+          if (rand() < 0.35) setP(p, x, y, z, 1 + Math.floor(rand() * 4));
+        }
+      }
+    }
+
+    let verts = 0;
+    let indices = 0;
+    let hash = 0x811c9dc5;
+    for (const g of mesh(p)) {
+      if (g === null) continue;
+      verts += g.vertexCount;
+      indices += g.index.length;
+      for (const a of [g.position, g.normal, g.color, g.extra, g.index]) {
+        hash = fnv1a(hash, new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
+      }
+    }
+    expect(verts).toBe(180152);
+    expect(indices).toBe(270228);
+    expect(hash).toBe(0x7dc19a0c);
   });
 });

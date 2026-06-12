@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { raycastGround, raycastVoxel } from "../src/core/raycast";
+import { raycastPlane, raycastVoxel } from "../src/core/raycast";
 import { AIR, WORLD_SX, WORLD_SZ } from "../src/core/types";
 
 const mulberry32 = (a: number) => () => {
@@ -183,20 +183,34 @@ describe("raycastVoxel property", () => {
   });
 });
 
-describe("raycastGround", () => {
+describe("raycastPlane", () => {
   test("hits the baseplate inside bounds", () => {
-    const hit = raycastGround(10.5, 5, 20.5, 0.5, -1, 0.25);
+    const hit = raycastPlane(10.5, 5, 20.5, 0.5, -1, 0.25);
     expect(hit).toEqual({ x: 13, y: -1, z: 21, face: 2, ground: true });
   });
 
   test("misses when dy >= 0", () => {
-    expect(raycastGround(10.5, 5, 20.5, 1, 0, 0)).toBeNull();
-    expect(raycastGround(10.5, 5, 20.5, 0, 1, 0)).toBeNull();
+    expect(raycastPlane(10.5, 5, 20.5, 1, 0, 0)).toBeNull();
+    expect(raycastPlane(10.5, 5, 20.5, 0, 1, 0)).toBeNull();
   });
 
   test("misses when the intersection lands outside XZ bounds", () => {
-    expect(raycastGround(-10, 5, 20.5, 0, -1, 0)).toBeNull();
-    expect(raycastGround(WORLD_SX - 0.5, 1, 20.5, 5, -1, 0)).toBeNull();
-    expect(raycastGround(10.5, 5, WORLD_SZ + 3, 0, -1, 0)).toBeNull();
+    expect(raycastPlane(-10, 5, 20.5, 0, -1, 0)).toBeNull();
+    expect(raycastPlane(WORLD_SX - 0.5, 1, 20.5, 5, -1, 0)).toBeNull();
+    expect(raycastPlane(10.5, 5, WORLD_SZ + 3, 0, -1, 0)).toBeNull();
+  });
+
+  test("elevated plane reports the cell below it so placement lands at planeY", () => {
+    const hit = raycastPlane(10.5, 20, 10.5, 0, -1, 0, 8);
+    expect(hit).toEqual({ x: 10, y: 7, z: 10, face: 2, ground: true });
+  });
+
+  test("elevated plane misses when the ray starts below it", () => {
+    expect(raycastPlane(10.5, 3, 10.5, 0, -1, 0, 8)).toBeNull();
+  });
+
+  test("out-of-world plane heights never hit", () => {
+    expect(raycastPlane(10.5, 90, 10.5, 0, -1, 0, -2)).toBeNull();
+    expect(raycastPlane(10.5, 900, 10.5, 0, -1, 0, 4096)).toBeNull();
   });
 });

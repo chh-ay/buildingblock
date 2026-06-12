@@ -1,175 +1,346 @@
+/**
+ * Sail Ship — a square-rigged sloop on open sea, composed for the hero camera
+ * (azimuth -0.65 rad: viewer sits at +X/-Z, so the bow points -Z toward the
+ * lens and the tall rig reads behind it).
+ *
+ * Layout (z runs stern→bow):
+ *   z 63..60  transom + raised quarterdeck (rail ring, stern windows, lantern)
+ *   z 59..36  midship, half-beam 5, planked freeboard + bulwark runs
+ *   z 35..23  bow taper — each height step is a complete ramp run capped with
+ *             corner wedges (never a lone wedge), descending 12 → 10
+ *   z 22..21  proud stem post, then bowsprit reaching to z=16
+ *   mast at z=40 carrying three staggered square sails + pennant
+ */
 import type { SceneCtx, SceneSpec } from "../scene";
 import {
+  CLS_METAL,
+  CLS_WATER,
   MaterialClass,
-  SHAPE_RAMP_NX,
-  SHAPE_RAMP_NZ,
-  SHAPE_RAMP_PX,
+  SHAPE_CORNER_NXPZ,
+  SHAPE_CORNER_PXPZ,
   SHAPE_RAMP_PZ,
   SHAPE_SLAB_BOTTOM,
+  SHAPE_VSLAB_NX,
+  SHAPE_VSLAB_NZ,
+  SHAPE_VSLAB_PX,
+  SHAPE_VSLAB_PZ,
 } from "../scene";
 
-// Deterministic 2D hash -> [0, 1) for stable wave streak break-up.
-const hash2 = (a: number, b: number): number => {
-  let h = Math.imul(a + 0x9e37, 0x85ebca6b) ^ Math.imul(b + 0x7f4a, 0xc2b2ae35);
-  h = Math.imul(h ^ (h >>> 15), 0x27d4eb2f);
-  return ((h ^ (h >>> 13)) >>> 0) / 0x100000000;
+// ── palette ─────────────────────────────────────────────────────────────────
+
+const WATER_DEEP = 0x2b5d70;
+const WATER_LITE = 0x39798c;
+const FOAM = 0xa8d8dc;
+
+const KEEL = 0x3b2a1c;
+const WOOD_DARK = 0x5e3c28;
+const WOOD_MID = 0x7d5236;
+const WOOD_LIGHT = 0x9a6c44;
+const DECK_A = 0xc2a071;
+const DECK_B = 0xab8a5f;
+
+const SAIL_BRIGHT = 0xfaf7ee; // billowed columns catching the light
+const SAIL_DIM = 0xeae4d2; // columns falling back toward the yard
+const ROPE = 0x2c2218;
+
+const GLASS_SEA = 0xbfe3e8;
+const IRON = 0x6f7680;
+const LANTERN = 0xffd9a0;
+const PENNANT = 0xc4524a;
+
+// ── geometry ────────────────────────────────────────────────────────────────
+
+const SEA_Y = 8; // ocean is one slab layer; surface sits at y=8.5
+const CX = 52; // hull centreline, nudged +X toward the camera
+const MAST_Z = 40;
+const STERN_Z = 63;
+
+/** Hull bands stern→bow. `step` rows carry the descending bow ramp run. */
+interface HullBand {
+  readonly z0: number;
+  readonly z1: number;
+  readonly half: number; // half-beam
+  readonly top: number; // deck cube layer (ramp layer on step rows)
+  readonly step?: boolean;
+}
+
+const BANDS: readonly HullBand[] = [
+  { z0: 23, z1: 24, half: 1, top: 10, step: true },
+  { z0: 25, z1: 27, half: 2, top: 11, step: true },
+  { z0: 28, z1: 31, half: 3, top: 12, step: true },
+  { z0: 32, z1: 35, half: 4, top: 12 },
+  { z0: 36, z1: 59, half: 5, top: 12 },
+  { z0: 60, z1: 63, half: 4, top: 12 },
+];
+
+const Matte = MaterialClass.Matte;
+const Glass = MaterialClass.Glass;
+const Emissive = MaterialClass.Emissive;
+
+/** Thin 1-voxel rope line: integer DDA along the dominant axis. */
+const line3 = (
+  ctx: SceneCtx,
+  x0: number,
+  y0: number,
+  z0: number,
+  x1: number,
+  y1: number,
+  z1: number,
+): void => {
+  const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), Math.abs(z1 - z0));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    ctx.set(
+      Math.round(x0 + (x1 - x0) * t),
+      Math.round(y0 + (y1 - y0) * t),
+      Math.round(z0 + (z1 - z0) * t),
+      Matte,
+      ROPE,
+    );
+  }
 };
 
-const WATER = 0x2e6f78;
-const WATER_LIGHT = 0x47919b;
-const KEEL = 0x4a3324;
-const WOOD_DARK = 0x6e4630;
-const WOOD_MID = 0x8a5a3b;
-const DECK_A = 0xc9a877;
-const DECK_B = 0xb08a5e;
-const SAIL = 0xf2efe6;
-const CORAL = 0xc4524a;
-const LANTERN = 0xffd9a0;
-const SLATE = 0x3c4148;
+// ── sea ─────────────────────────────────────────────────────────────────────
 
-const PAD0 = 8;
-const PAD1 = 87;
-const CX = 47; // hull centreline
-const Z0 = 28; // stern row; bow points toward +z
-
-// Half-beam per hull row: flat transom, broad midship, tapering bow stem.
-const HALF_W = [
-  2, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 2, 2, 2, 1, 1, 1,
-  0, 0, 0,
-];
-const QDECK_ROWS = 9; // raised quarterdeck over the stern rows
-
+/** Two close blues in wide diagonal bands — calm water, no per-cell noise. */
 const buildSea = (ctx: SceneCtx): void => {
-  for (let z = PAD0; z <= PAD1; z++) {
-    for (let x = PAD0; x <= PAD1; x++) {
-      const streak = (x * 2 + z * 5) % 31 < 2 && hash2(x, z) > 0.3;
-      ctx.set(x, 0, z, MaterialClass.Gloss, streak ? WATER_LIGHT : WATER);
+  for (let z = 0; z < 96; z++) {
+    for (let x = 0; x < 96; x++) {
+      const lit = ((x + z * 2) & 15) < 5;
+      ctx.set(x, SEA_Y, z, CLS_WATER, lit ? WATER_LITE : WATER_DEEP, SHAPE_SLAB_BOTTOM);
     }
   }
+};
+
+const foam = (ctx: SceneCtx, x: number, z: number): void =>
+  ctx.set(x, SEA_Y, z, CLS_WATER, FOAM, SHAPE_SLAB_BOTTOM);
+
+/** Sparse foam band hugging the hull, plus two short wake trails astern. */
+const buildFoamAndWake = (ctx: SceneCtx): void => {
+  // flecks along both sides of every hull row, with deterministic gaps
+  for (const band of BANDS) {
+    for (let z = band.z0; z <= band.z1; z++) {
+      if (((z * 5) & 7) < 6) {
+        foam(ctx, CX - band.half - 1, z);
+        foam(ctx, CX + band.half + 1, z);
+      }
+    }
+  }
+  // around the stem and across the transom
+  foam(ctx, CX - 1, 21);
+  foam(ctx, CX + 1, 21);
+  foam(ctx, CX, 20);
+  for (let x = CX - 3; x <= CX + 3; x++) {
+    if (((x * 5) & 7) < 6) foam(ctx, x, STERN_Z + 1);
+  }
+  // two wake trails angling outward off the stern quarters
+  for (let i = 0; i < 8; i++) {
+    foam(ctx, CX - 3 - (i >> 1), STERN_Z + 2 + i);
+    foam(ctx, CX + 3 + (i >> 1), STERN_Z + 2 + i);
+  }
+};
+
+// ── hull ────────────────────────────────────────────────────────────────────
+
+/** Freeboard tones: keel band, dark planking, mid strake, light wale at deck. */
+const hullColor = (x: number, y: number, half: number, solidTop: number, deck: boolean): number => {
+  if (y === SEA_Y) return KEEL;
+  if (y < solidTop - 1) return WOOD_DARK;
+  if (y === solidTop - 1) return WOOD_MID;
+  if (!deck || Math.abs(x - CX) === half) return WOOD_LIGHT;
+  return (x - CX) & 1 ? DECK_B : DECK_A; // lengthwise plank stripes
 };
 
 const buildHull = (ctx: SceneCtx): void => {
-  for (let i = 0; i < HALF_W.length; i++) {
-    const z = Z0 + i;
-    const hw = HALF_W[i];
-    if (hw >= 2) ctx.box(CX - (hw - 2), 1, z, CX + (hw - 2), 1, z, MaterialClass.Matte, KEEL);
-    if (hw >= 1) {
-      ctx.box(CX - (hw - 1), 2, z, CX + (hw - 1), 2, z, MaterialClass.Matte, WOOD_DARK);
-    } else {
-      ctx.set(CX, 2, z, MaterialClass.Matte, WOOD_DARK);
-    }
-    ctx.box(CX - hw, 3, z, CX + hw, 3, z, MaterialClass.Matte, WOOD_MID);
-    // Deck planking, two tones.
-    for (let x = CX - hw; x <= CX + hw; x++) {
-      ctx.set(x, 4, z, MaterialClass.Matte, (x + z) & 1 ? DECK_A : DECK_B);
-    }
-    if (hw >= 1) {
-      ctx.set(CX - hw, 5, z, MaterialClass.Matte, WOOD_MID);
-      ctx.set(CX + hw, 5, z, MaterialClass.Matte, WOOD_MID);
-    }
-    // Side flares at the waterline strake.
-    if (hw >= 2) {
-      ctx.set(CX - hw - 1, 3, z, MaterialClass.Matte, WOOD_MID, SHAPE_RAMP_PX);
-      ctx.set(CX + hw + 1, 3, z, MaterialClass.Matte, WOOD_MID, SHAPE_RAMP_NX);
+  for (const band of BANDS) {
+    for (let z = band.z0; z <= band.z1; z++) {
+      const step = band.step === true && z === band.z0;
+      const solidTop = step ? band.top - 1 : band.top;
+      for (let x = CX - band.half; x <= CX + band.half; x++) {
+        for (let y = SEA_Y; y <= solidTop; y++) {
+          ctx.set(x, y, z, Matte, hullColor(x, y, band.half, solidTop, !step));
+        }
+      }
+      if (step) {
+        // complete bow descent: ramp run across the full beam, corner-capped
+        ctx.set(CX - band.half, band.top, z, Matte, WOOD_LIGHT, SHAPE_CORNER_PXPZ);
+        ctx.set(CX + band.half, band.top, z, Matte, WOOD_LIGHT, SHAPE_CORNER_NXPZ);
+        for (let x = CX - band.half + 1; x <= CX + band.half - 1; x++) {
+          ctx.set(x, band.top, z, Matte, WOOD_LIGHT, SHAPE_RAMP_PZ);
+        }
+      }
     }
   }
-  // Bow stem ramps rising back toward the hull.
-  const bowZ = Z0 + HALF_W.length - 1;
-  ctx.set(CX, 4, bowZ, MaterialClass.Matte, WOOD_MID, SHAPE_RAMP_NZ);
-  ctx.set(CX, 4, bowZ - 1, MaterialClass.Matte, WOOD_MID, SHAPE_RAMP_NZ);
-  // Stern transom ramp.
-  ctx.box(CX - 2, 4, Z0 - 1, CX + 2, 4, Z0 - 1, MaterialClass.Matte, WOOD_MID, SHAPE_RAMP_PZ);
+
+  // proud stem: forefoot row, then a post rising above the bow deck
+  ctx.box(CX, SEA_Y, 22, CX, 9, 22, Matte, WOOD_DARK);
+  ctx.set(CX, SEA_Y, 21, Matte, KEEL);
+  ctx.box(CX, 9, 21, CX, 10, 21, Matte, WOOD_DARK);
+  ctx.box(CX, 11, 21, CX, 12, 21, Matte, WOOD_MID);
+  ctx.set(CX, 13, 21, Matte, WOOD_LIGHT);
+
+  // transom: three glass stern windows set into the light wale
+  ctx.set(CX - 2, 12, STERN_Z, Glass, GLASS_SEA);
+  ctx.set(CX, 12, STERN_Z, Glass, GLASS_SEA);
+  ctx.set(CX + 2, 12, STERN_Z, Glass, GLASS_SEA);
 };
+
+/** Midship bulwark: continuous panel runs with posts, both sides. */
+const buildBulwark = (ctx: SceneCtx): void => {
+  for (let z = 36; z <= 53; z++) {
+    ctx.set(CX - 5, 13, z, Matte, WOOD_MID, SHAPE_VSLAB_NX);
+    ctx.set(CX + 5, 13, z, Matte, WOOD_MID, SHAPE_VSLAB_PX);
+  }
+  for (const z of [36, 42, 48, 53]) {
+    ctx.set(CX - 5, 13, z, Matte, WOOD_DARK);
+    ctx.set(CX + 5, 13, z, Matte, WOOD_DARK);
+  }
+};
+
+// ── quarterdeck ─────────────────────────────────────────────────────────────
 
 const buildQuarterdeck = (ctx: SceneCtx): void => {
-  for (let i = 0; i < QDECK_ROWS; i++) {
-    const z = Z0 + i;
-    const hw = HALF_W[i];
-    for (let x = CX - hw; x <= CX + hw; x++) {
-      ctx.set(x, 5, z, MaterialClass.Matte, (x + z) & 1 ? DECK_B : DECK_A);
+  // raised mass over the stern rows, deck two above the waist
+  for (let z = 54; z <= STERN_Z; z++) {
+    const half = z <= 59 ? 5 : 4;
+    for (let x = CX - half; x <= CX + half; x++) {
+      ctx.set(x, 13, z, Matte, WOOD_MID);
+      const rim = Math.abs(x - CX) === half;
+      ctx.set(x, 14, z, Matte, rim ? WOOD_LIGHT : (x - CX) & 1 ? DECK_B : DECK_A);
     }
-    ctx.set(CX - hw, 6, z, MaterialClass.Matte, WOOD_MID);
-    ctx.set(CX + hw, 6, z, MaterialClass.Matte, WOOD_MID);
   }
-  // Stern rail across the transom.
-  ctx.box(CX - 2, 6, Z0, CX + 2, 6, Z0, MaterialClass.Matte, WOOD_MID);
-  // Half-step from main deck up to the quarterdeck.
-  ctx.box(
-    CX - 1,
-    5,
-    Z0 + QDECK_ROWS,
-    CX + 1,
-    5,
-    Z0 + QDECK_ROWS,
-    MaterialClass.Matte,
-    DECK_A,
-    SHAPE_SLAB_BOTTOM,
-  );
-  // Railing posts.
-  for (const i of [0, 4, 8]) {
-    const hw = HALF_W[i];
-    ctx.set(CX - hw, 7, Z0 + i, MaterialClass.Matte, KEEL);
-    ctx.set(CX + hw, 7, Z0 + i, MaterialClass.Matte, KEEL);
+
+  // companionway: two stacked 3-wide ramp runs climbing from the waist
+  for (let x = CX - 1; x <= CX + 1; x++) {
+    ctx.set(x, 13, 52, Matte, DECK_B, SHAPE_RAMP_PZ);
+    ctx.set(x, 13, 53, Matte, DECK_B);
+    ctx.set(x, 14, 53, Matte, DECK_B, SHAPE_RAMP_PZ);
   }
-  for (const i of [12, 16, 20, 24, 28]) {
-    const hw = HALF_W[i];
-    ctx.set(CX - hw, 6, Z0 + i, MaterialClass.Matte, KEEL);
-    ctx.set(CX + hw, 6, Z0 + i, MaterialClass.Matte, KEEL);
+
+  // rail ring at y=15: front run (gap at the stair), side runs, stern run
+  for (let x = CX - 5; x <= CX + 5; x++) {
+    if (Math.abs(x - CX) > 1) ctx.set(x, 15, 54, Matte, WOOD_MID, SHAPE_VSLAB_NZ);
   }
+  for (let z = 55; z <= 59; z++) {
+    ctx.set(CX - 5, 15, z, Matte, WOOD_MID, SHAPE_VSLAB_NX);
+    ctx.set(CX + 5, 15, z, Matte, WOOD_MID, SHAPE_VSLAB_PX);
+  }
+  for (let z = 60; z <= 62; z++) {
+    ctx.set(CX - 4, 15, z, Matte, WOOD_MID, SHAPE_VSLAB_NX);
+    ctx.set(CX + 4, 15, z, Matte, WOOD_MID, SHAPE_VSLAB_PX);
+  }
+  for (let x = CX - 4; x <= CX + 4; x++) {
+    ctx.set(x, 15, STERN_Z, Matte, WOOD_MID, SHAPE_VSLAB_PZ);
+  }
+  // posts at the ring corners, the stair gap, and the beam step
+  for (const [x, z] of [
+    [CX - 5, 54],
+    [CX + 5, 54],
+    [CX - 2, 54],
+    [CX + 2, 54],
+    [CX - 5, 59],
+    [CX + 5, 59],
+    [CX - 4, 60],
+    [CX + 4, 60],
+    [CX - 4, STERN_Z],
+    [CX + 4, STERN_Z],
+  ] as const) {
+    ctx.set(x, 15, z, Matte, WOOD_DARK);
+  }
+
+  // stern lantern: iron post on the taffrail, warm glow, iron cap
+  ctx.set(CX, 15, STERN_Z, CLS_METAL, IRON);
+  ctx.set(CX, 16, STERN_Z, Emissive, LANTERN);
+  ctx.set(CX, 17, STERN_Z, CLS_METAL, IRON, SHAPE_SLAB_BOTTOM);
 };
 
-const buildSail = (
-  ctx: SceneCtx,
-  yBottom: number,
-  yTop: number,
-  xHalf: number,
-  zBase: number,
-): void => {
-  // 1-voxel-thick pane, billowed toward the bow by a per-row z offset.
-  const rows = yTop - yBottom;
-  for (let y = yBottom; y <= yTop; y++) {
-    const t = rows === 0 ? 0 : (yTop - y) / rows; // 0 at yard, 1 at foot
-    const zOff = Math.round(Math.sin(t * Math.PI * 0.62) * 2);
-    for (let x = CX - xHalf; x <= CX + xHalf; x++) {
-      ctx.set(x, y, zBase + zOff, MaterialClass.Matte, SAIL);
-    }
-  }
-};
+// ── rig: mast, yards, square sails ──────────────────────────────────────────
+
+interface SailSpec {
+  readonly yBot: number;
+  readonly yTop: number;
+  readonly halfW: number;
+  readonly yardY: number;
+}
+
+const SAILS: readonly SailSpec[] = [
+  { yBot: 14, yTop: 21, halfW: 5, yardY: 22 }, // course
+  { yBot: 24, yTop: 29, halfW: 4, yardY: 30 }, // topsail
+  { yBot: 32, yTop: 36, halfW: 3, yardY: 37 }, // topgallant
+];
+
+/**
+ * Billow: solid 1-voxel-thick canvas, each column's z plane stepping forward
+ * toward the centre. `r` is the distance in from the sail edge. Full cubes so
+ * the staggered column flanks catch the hero camera's dominant -X view.
+ */
+const sailPlane = (r: number): number => (r === 0 ? 39 : r <= 2 ? 38 : 37);
 
 const buildRig = (ctx: SceneCtx): void => {
-  const mainZ = 42;
-  const foreZ = 53;
-  ctx.box(CX, 5, mainZ, CX, 25, mainZ, MaterialClass.Matte, KEEL);
-  ctx.box(CX, 5, foreZ, CX, 22, foreZ, MaterialClass.Matte, KEEL);
-  // Yardarms.
-  ctx.box(CX - 6, 12, mainZ, CX + 6, 12, mainZ, MaterialClass.Matte, KEEL);
-  ctx.box(CX - 5, 19, mainZ, CX + 5, 19, mainZ, MaterialClass.Matte, KEEL);
-  ctx.box(CX - 5, 11, foreZ, CX + 5, 11, foreZ, MaterialClass.Matte, KEEL);
-  ctx.box(CX - 4, 17, foreZ, CX + 4, 17, foreZ, MaterialClass.Matte, KEEL);
-  // Square sails hung beneath each yard.
-  buildSail(ctx, 6, 11, 5, mainZ + 1);
-  buildSail(ctx, 13, 18, 4, mainZ + 1);
-  buildSail(ctx, 6, 10, 4, foreZ + 1);
-  buildSail(ctx, 12, 16, 3, foreZ + 1);
-  // Coral pennant at the masthead, streaming aft-to-fore.
-  ctx.box(CX, 25, mainZ + 1, CX, 25, mainZ + 3, MaterialClass.Matte, CORAL);
-  ctx.box(CX, 24, mainZ + 1, CX, 24, mainZ + 2, MaterialClass.Matte, CORAL);
+  // mast from deck to masthead
+  ctx.box(CX, 13, MAST_Z, CX, 44, MAST_Z, Matte, WOOD_DARK);
+
+  for (const sail of SAILS) {
+    // yard: dark spar braced against the mast face
+    ctx.box(CX - sail.halfW, sail.yardY, 39, CX + sail.halfW, sail.yardY, 39, Matte, KEEL);
+    // canvas: each column one unbroken vertical cube run on its own plane
+    for (let dx = -sail.halfW; dx <= sail.halfW; dx++) {
+      const z = sailPlane(sail.halfW - Math.abs(dx));
+      const rgb = z === 37 ? SAIL_BRIGHT : SAIL_DIM;
+      for (let y = sail.yBot; y <= sail.yTop; y++) {
+        ctx.set(CX + dx, y, z, Matte, rgb);
+      }
+    }
+  }
+
+  // pennant streaming aft off the masthead
+  ctx.set(CX, 44, 41, Matte, PENNANT, SHAPE_VSLAB_PX);
+  ctx.set(CX, 44, 42, Matte, PENNANT, SHAPE_VSLAB_PX);
+  ctx.set(CX, 43, 41, Matte, PENNANT, SHAPE_VSLAB_PX);
 };
 
-const buildDetails = (ctx: SceneCtx): void => {
-  // Stern lantern on a short post.
-  ctx.set(CX, 7, Z0 + 1, MaterialClass.Matte, KEEL);
-  ctx.set(CX, 8, Z0 + 1, MaterialClass.Emissive, LANTERN);
-  ctx.set(CX, 9, Z0 + 1, MaterialClass.Matte, SLATE, SHAPE_SLAB_BOTTOM);
-  // Anchor buoy bobbing off the starboard bow.
-  ctx.set(62, 1, 70, MaterialClass.Gloss, CORAL);
-  ctx.set(61, 1, 70, MaterialClass.Gloss, CORAL);
-  ctx.set(63, 1, 70, MaterialClass.Gloss, CORAL);
-  ctx.set(62, 1, 69, MaterialClass.Gloss, CORAL);
-  ctx.set(62, 1, 71, MaterialClass.Gloss, CORAL);
-  ctx.set(62, 2, 70, MaterialClass.Matte, SAIL);
-  ctx.set(62, 3, 70, MaterialClass.Gloss, CORAL, SHAPE_SLAB_BOTTOM);
+// ── headgear: bowsprit + jib ────────────────────────────────────────────────
+
+/** Jib columns (z, yBot, yTop): triangle between forestay and bowsprit. */
+const JIB: ReadonlyArray<readonly [number, number, number]> = [
+  [18, 15, 16],
+  [19, 15, 17],
+  [20, 15, 19],
+  [21, 16, 20],
+  [22, 16, 21],
+  [23, 16, 22],
+  [24, 16, 23],
+  [25, 17, 24],
+  [26, 17, 25],
+];
+
+const buildHeadgear = (ctx: SceneCtx): void => {
+  // bowsprit climbing off the stem head
+  ctx.set(CX, 13, 20, Matte, WOOD_DARK);
+  ctx.set(CX, 13, 19, Matte, WOOD_DARK);
+  ctx.set(CX, 14, 18, Matte, WOOD_DARK);
+  ctx.set(CX, 14, 17, Matte, WOOD_DARK);
+  ctx.set(CX, 15, 16, Matte, WOOD_DARK);
+
+  // jib: unbroken vertical panel runs, flush to the camera-side wall
+  for (const [z, yBot, yTop] of JIB) {
+    for (let y = yBot; y <= yTop; y++) {
+      ctx.set(CX, y, z, Matte, SAIL_DIM, SHAPE_VSLAB_PX);
+    }
+  }
 };
+
+// ── deck furniture ──────────────────────────────────────────────────────────
+
+const buildDetails = (ctx: SceneCtx): void => {
+  // main hatch: dark grating patch set into the waist planking
+  ctx.box(CX - 1, 12, 45, CX + 1, 12, 47, Matte, WOOD_DARK);
+  // capstan just forward of the companionway
+  ctx.set(CX, 13, 49, Matte, KEEL);
+  ctx.set(CX, 14, 49, Matte, WOOD_MID, SHAPE_SLAB_BOTTOM);
+};
+
+// ── scene ───────────────────────────────────────────────────────────────────
 
 export const scene: SceneSpec = {
   id: "sail-ship",
@@ -180,9 +351,19 @@ export const scene: SceneSpec = {
   cz: 3,
   build(ctx: SceneCtx): void {
     buildSea(ctx);
+    buildFoamAndWake(ctx);
     buildHull(ctx);
+    buildBulwark(ctx);
     buildQuarterdeck(ctx);
     buildRig(ctx);
+    buildHeadgear(ctx);
+
+    // standing rigging, kept sparse so the canvas dominates: forestay over
+    // the jib luff plus a backstay pair to the stern rail
+    line3(ctx, CX, 43, MAST_Z, CX, 15, 16); // forestay
+    line3(ctx, CX, 43, MAST_Z, CX - 4, 16, 62); // port backstay
+    line3(ctx, CX, 43, MAST_Z, CX + 4, 16, 62); // starboard backstay
+
     buildDetails(ctx);
   },
 };

@@ -16,19 +16,22 @@ export class CameraRig {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.camera = new PerspectiveCamera(50, 1, 0.1, 2000);
+    // Near plane tight enough that block-level close-ups don't clip.
+    this.camera = new PerspectiveCamera(50, 1, 0.05, 2000);
     this.camera.position.set(34, 30, 52);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
     // Time-based damping (update receives dt); higher factor = tighter stop.
     this.controls.dampingFactor = 0.15;
     this.controls.target.set(0, 3, 0);
-    this.controls.minDistance = 2;
+    // Close enough to inspect a single block face-on.
+    this.controls.minDistance = 0.6;
     // Zoom-out ceiling scales with the world so small plates can't become a speck.
     this.controls.maxDistance = Math.max(160, Math.max(WORLD_SX, WORLD_SZ) * 2.2);
     this.controls.maxPolarAngle = Math.PI * 0.495;
-    // Wheel dollies toward the pointer, not the pivot — the single biggest feel win.
-    this.controls.zoomToCursor = true;
+    // Wheel dollies straight along the view axis (cursor-tracking zoom reads as an
+    // arc); F re-pivots onto the hovered block when you want to dive somewhere.
+    this.controls.zoomToCursor = false;
     // Pan slides along the ground plane instead of drifting skyward in screen space.
     this.controls.screenSpacePanning = false;
     this.controls.mouseButtons = { LEFT: null, MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE };

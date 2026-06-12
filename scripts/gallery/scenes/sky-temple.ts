@@ -1,128 +1,172 @@
+/**
+ * Sky Temple — a floating island shrine composed as one silhouette: an
+ * inverted rock cone hanging in the sky, a calm lawn on top, and a two-tier
+ * pagoda rising slightly off-centre. The hero camera looks from the east
+ * (azimuth -0.65 rad, ~33° up), so the reflecting basin and its waterfall
+ * spill over the EAST rim toward the viewer, the torii approach crosses the
+ * lawn behind it, and the pagoda stands tall against the sky.
+ *
+ * Form notes:
+ * - The underbelly tapers with complete wedge rings: every taper level is a
+ *   full ring (4 ramp runs + 4 corner wedges) wrapped around a solid core,
+ *   alternating with crisp square cliff bands. All rings derive from one
+ *   hand-written profile table, so slope continuity holds by construction —
+ *   each ring's low inner edge meets the next band's top edge exactly.
+ * - Both pagoda roofs are full hip rings over timber beam rings; eaves are
+ *   unbroken slab-top rings with two-slab corner kicks.
+ * - Every VSLAB lives in a cluster: shoji screens between posts, the veranda
+ *   balustrade ring, and the waterfall sheet.
+ */
 import type { SceneCtx, SceneSpec } from "../scene";
 import {
+  CLS_METAL,
+  CLS_PLASMA,
+  CLS_WATER,
   MaterialClass,
+  SHAPE_CORNER_NXNZ,
+  SHAPE_CORNER_NXPZ,
+  SHAPE_CORNER_PXNZ,
+  SHAPE_CORNER_PXPZ,
   SHAPE_RAMP_NX,
   SHAPE_RAMP_NZ,
   SHAPE_RAMP_PX,
   SHAPE_RAMP_PZ,
   SHAPE_SLAB_BOTTOM,
   SHAPE_SLAB_TOP,
+  SHAPE_VSLAB_NX,
+  SHAPE_VSLAB_NZ,
+  SHAPE_VSLAB_PX,
+  SHAPE_VSLAB_PZ,
 } from "../scene";
 
-const ROCK_DARK = 0x4a4f57;
-const ROCK_LIGHT = 0x5c6670;
-const GRASS_A = 0x4f8a4c;
-const GRASS_B = 0x3e6b46;
+// ---------------------------------------------------------------------------
+// Palette — three value tiers inside every material area.
+
+const GRASS_BRIGHT = 0x6fae54;
+const GRASS_MID = 0x4f8a4c;
+const GRASS_DARK = 0x3a6b42;
+const SOIL = 0x6b4f33;
+const ROCK_LIGHT = 0x7a7268;
+const ROCK_MID = 0x5d574f;
+const ROCK_DARK = 0x423d38;
+const STONE = 0x9aa0a8;
+const STONE_DARK = 0x70767e;
 const TIMBER = 0x4a3527;
-const ROOT = 0x6b5135;
 const CREAM = 0xe8e0cf;
-const TORII_RED = 0xb84a3e;
-const ROOF_SLATE = 0x394048;
+const SHOJI = 0xf5efe2;
+const TORII_RED = 0xc23b2e;
+const ROOF_SLATE = 0x3a4654;
+const ROOF_EAVE = 0x2c343f;
+const ROOF_RIDGE = 0x5b6c80;
+const GOLD = 0xd8b04a;
 const WATER = 0x3f7fae;
 const WATER_DEEP = 0x2c5d85;
+const FOAM = 0xcfe9f4;
+const CLOUD_LIGHT = 0xc9cdd4;
+const CLOUD_SHADE = 0xaab0b9;
 const LANTERN = 0xffd9a0;
-const STONE = 0x9aa0a8;
-const CLOUD = 0xf4f4f0;
-const GOLD = 0xd8b04a;
+const PLASMA = 0x9fe8ff;
 
-// Island centre and the y of its grass surface.
-const ICX = 44;
-const ICZ = 46;
-const TOP_Y = 26;
-// Per-layer radius, depth 0 = grass cap, deeper layers shrink into the cone tip.
-const ISLAND_RADII = [15, 14.2, 13.2, 12, 10.6, 9.2, 7.8, 6.4, 5.1, 4, 3, 2.2, 1.5, 1];
+const { Matte, Gloss, Emissive } = MaterialClass;
 
-const buildIsland = (ctx: SceneCtx): void => {
-  for (let depth = 0; depth < ISLAND_RADII.length; depth++) {
-    const y = TOP_Y - depth;
-    const r = ISLAND_RADII[depth];
-    const span = Math.ceil(r) + 1;
-    for (let z = ICZ - span; z <= ICZ + span; z++) {
-      for (let x = ICX - span; x <= ICX + span; x++) {
-        const dx = x - ICX;
-        const dz = z - ICZ;
-        // Deterministic edge jitter so the rim reads organic instead of circular.
-        const jitter = ((x * 13 + z * 7) % 3) * 0.45;
-        const rr = r + (depth === 0 ? jitter : jitter * 0.5);
-        if (dx * dx + dz * dz > rr * rr) continue;
-        if (depth === 0) {
-          ctx.set(x, y, z, MaterialClass.Matte, (x + z) & 1 ? GRASS_A : GRASS_B);
-        } else {
-          ctx.set(x, y, z, MaterialClass.Matte, (x + y + z) & 1 ? ROCK_DARK : ROCK_LIGHT);
-        }
-      }
-    }
+// ---------------------------------------------------------------------------
+// Layout anchors.
+
+/** Island centre; the lawn rectangle is ICX±16 by ICZ±17. */
+const ICX = 45;
+const ICZ = 49;
+/** Grass cap layer; everything on the lawn stands from LAWN_Y + 1. */
+const LAWN_Y = 24;
+const DECK = LAWN_Y + 1;
+
+// ---------------------------------------------------------------------------
+// Ring helpers — always full rings, never lone wedges.
+
+/** Wedge ring sloping up toward the OUTSIDE of the rect (island taper). */
+const taperRing = (
+  ctx: SceneCtx,
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  y: number,
+  rgb: number,
+): void => {
+  for (let x = x0 + 1; x < x1; x++) {
+    ctx.set(x, y, z0, Matte, rgb, SHAPE_RAMP_NZ);
+    ctx.set(x, y, z1, Matte, rgb, SHAPE_RAMP_PZ);
   }
-
-  // Hanging root strands off the cone underside.
-  const rootCols: ReadonlyArray<readonly [number, number]> = [
-    [-12, 2],
-    [-9, -7],
-    [-4, 11],
-    [3, -12],
-    [8, 8],
-    [11, -3],
-    [6, 12],
-    [-13, -3],
-  ];
-  for (const [dx, dz] of rootCols) {
-    const dist = Math.hypot(dx, dz);
-    let depth = 1;
-    while (depth + 1 < ISLAND_RADII.length && ISLAND_RADII[depth + 1] > dist) depth++;
-    const top = TOP_Y - depth - 1;
-    const len = 2 + ((Math.abs(dx * 5 + dz * 3) >> 1) % 4);
-    ctx.box(ICX + dx, top, ICZ + dz, ICX + dx, top - len, ICZ + dz, MaterialClass.Matte, ROOT);
+  for (let z = z0 + 1; z < z1; z++) {
+    ctx.set(x0, y, z, Matte, rgb, SHAPE_RAMP_NX);
+    ctx.set(x1, y, z, Matte, rgb, SHAPE_RAMP_PX);
   }
+  ctx.set(x0, y, z0, Matte, rgb, SHAPE_CORNER_NXNZ);
+  ctx.set(x1, y, z0, Matte, rgb, SHAPE_CORNER_PXNZ);
+  ctx.set(x0, y, z1, Matte, rgb, SHAPE_CORNER_NXPZ);
+  ctx.set(x1, y, z1, Matte, rgb, SHAPE_CORNER_PXPZ);
 };
 
-const buildPond = (ctx: SceneCtx): void => {
-  const px = 51;
-  const pz = 51;
-  for (let z = pz - 3; z <= pz + 3; z++) {
-    for (let x = px - 3; x <= px + 3; x++) {
-      const d = (x - px) ** 2 + (z - pz) ** 2;
-      if (d > 10) continue;
-      ctx.set(x, TOP_Y - 1, z, MaterialClass.Gloss, WATER_DEEP);
-      ctx.set(x, TOP_Y, z, MaterialClass.Glass, WATER);
-      if (d > 5 && (x + z) % 3 === 0)
-        ctx.set(x, TOP_Y + 1, z, MaterialClass.Matte, STONE, SHAPE_SLAB_BOTTOM);
-    }
+/** Wedge ring sloping up toward the INSIDE of the rect (roof hips). */
+const hipRing = (
+  ctx: SceneCtx,
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  y: number,
+  rgb: number,
+): void => {
+  for (let x = x0 + 1; x < x1; x++) {
+    ctx.set(x, y, z0, Gloss, rgb, SHAPE_RAMP_PZ);
+    ctx.set(x, y, z1, Gloss, rgb, SHAPE_RAMP_NZ);
   }
-  // Spill channel east, then a 1-wide fall off the rim into mist.
-  ctx.box(px + 3, TOP_Y, pz, 59, TOP_Y, pz, MaterialClass.Glass, WATER);
-  ctx.box(60, TOP_Y - 1, pz, 60, TOP_Y - 8, pz, MaterialClass.Glass, WATER);
-  const mist: ReadonlyArray<readonly [number, number, number]> = [
-    [60, 17, 51],
-    [59, 17, 50],
-    [61, 18, 52],
-    [60, 16, 50],
-    [61, 17, 50],
-    [59, 16, 52],
-  ];
-  for (const [x, y, z] of mist) ctx.set(x, y, z, MaterialClass.Matte, CLOUD, SHAPE_SLAB_BOTTOM);
-};
-
-const buildPath = (ctx: SceneCtx): void => {
-  for (let z = 43; z <= 58; z++) {
-    for (let x = 43; x <= 45; x++) {
-      ctx.set(x, TOP_Y, z, MaterialClass.Matte, (x * 3 + z) & 1 ? STONE : ROCK_LIGHT);
-    }
+  for (let z = z0 + 1; z < z1; z++) {
+    ctx.set(x0, y, z, Gloss, rgb, SHAPE_RAMP_PX);
+    ctx.set(x1, y, z, Gloss, rgb, SHAPE_RAMP_NX);
   }
+  ctx.set(x0, y, z0, Gloss, rgb, SHAPE_CORNER_PXPZ);
+  ctx.set(x1, y, z0, Gloss, rgb, SHAPE_CORNER_NXPZ);
+  ctx.set(x0, y, z1, Gloss, rgb, SHAPE_CORNER_PXNZ);
+  ctx.set(x1, y, z1, Gloss, rgb, SHAPE_CORNER_NXNZ);
 };
 
-const buildTorii = (ctx: SceneCtx): void => {
-  const y0 = TOP_Y + 1;
-  ctx.box(41, y0, 55, 41, y0 + 4, 55, MaterialClass.Matte, TORII_RED);
-  ctx.box(47, y0, 55, 47, y0 + 4, 55, MaterialClass.Matte, TORII_RED);
-  // Double lintel: lower tie beam, then the sweeping top beam with slab tips.
-  ctx.box(40, y0 + 3, 55, 48, y0 + 3, 55, MaterialClass.Matte, TORII_RED);
-  ctx.box(39, y0 + 5, 55, 49, y0 + 5, 55, MaterialClass.Matte, TORII_RED);
-  ctx.set(38, y0 + 5, 55, MaterialClass.Matte, TORII_RED, SHAPE_SLAB_TOP);
-  ctx.set(50, y0 + 5, 55, MaterialClass.Matte, TORII_RED, SHAPE_SLAB_TOP);
+/** One-voxel-tall perimeter rectangle (beam rings, eave rings, stone rims). */
+const rimRing = (
+  ctx: SceneCtx,
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  y: number,
+  cls: number,
+  rgb: number,
+  shape?: number,
+): void => {
+  ctx.box(x0, y, z0, x1, y, z0, cls, rgb, shape);
+  ctx.box(x0, y, z1, x1, y, z1, cls, rgb, shape);
+  ctx.box(x0, y, z0, x0, y, z1, cls, rgb, shape);
+  ctx.box(x1, y, z0, x1, y, z1, cls, rgb, shape);
 };
 
-// One pagoda roof tier: ramp skirt around the box rim with upturned slab corners.
-const roofTier = (
+/** Hollow wall box (interior never shows; saves voxels). */
+const wallShell = (
+  ctx: SceneCtx,
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  y0: number,
+  y1: number,
+  rgb: number,
+): void => {
+  ctx.box(x0, y0, z0, x1, y1, z0, Matte, rgb);
+  ctx.box(x0, y0, z1, x1, y1, z1, Matte, rgb);
+  ctx.box(x0, y0, z0, x0, y1, z1, Matte, rgb);
+  ctx.box(x1, y0, z0, x1, y1, z1, Matte, rgb);
+};
+
+/** Unbroken slab-top eave ring with a two-slab kick outside each corner. */
+const eaveRing = (
   ctx: SceneCtx,
   x0: number,
   z0: number,
@@ -130,96 +174,298 @@ const roofTier = (
   z1: number,
   y: number,
 ): void => {
-  ctx.box(x0 + 1, y, z0 + 1, x1 - 1, y, z1 - 1, MaterialClass.Matte, ROOF_SLATE);
-  ctx.box(x0, y, z0 + 1, x0, y, z1 - 1, MaterialClass.Matte, ROOF_SLATE, SHAPE_RAMP_PX);
-  ctx.box(x1, y, z0 + 1, x1, y, z1 - 1, MaterialClass.Matte, ROOF_SLATE, SHAPE_RAMP_NX);
-  ctx.box(x0 + 1, y, z0, x1 - 1, y, z0, MaterialClass.Matte, ROOF_SLATE, SHAPE_RAMP_PZ);
-  ctx.box(x0 + 1, y, z1, x1 - 1, y, z1, MaterialClass.Matte, ROOF_SLATE, SHAPE_RAMP_NZ);
-  for (const x of [x0, x1]) {
-    for (const z of [z0, z1]) ctx.set(x, y, z, MaterialClass.Matte, ROOF_SLATE, SHAPE_SLAB_TOP);
+  rimRing(ctx, x0, z0, x1, z1, y, Gloss, ROOF_EAVE, SHAPE_SLAB_TOP);
+  for (const [cx, cz, dx, dz] of [
+    [x0, z0, -1, -1],
+    [x1, z0, 1, -1],
+    [x0, z1, -1, 1],
+    [x1, z1, 1, 1],
+  ] as const) {
+    ctx.set(cx + dx, y, cz, Gloss, ROOF_EAVE, SHAPE_SLAB_TOP);
+    ctx.set(cx, y, cz + dz, Gloss, ROOF_EAVE, SHAPE_SLAB_TOP);
   }
 };
+
+// ---------------------------------------------------------------------------
+// Island — a chunky inverted cone, ~11 voxels deep below the lawn. `half` is
+// the x half-extent (z extent is half+1). Taper bands carry a full outward
+// wedge ring around a solid core; square bands are crisp cliff rims inset by
+// 2-3 cells, so the stepped strata silhouette reads from the hero camera.
+
+interface RockBand {
+  y: number;
+  half: number;
+  taper: boolean;
+}
+
+const ROCK_PROFILE: RockBand[] = [
+  { y: 23, half: 16, taper: false }, // soil band under the lawn
+  { y: 22, half: 16, taper: true },
+  { y: 21, half: 13, taper: false }, // cliff shelf
+  { y: 20, half: 13, taper: true },
+  { y: 19, half: 9, taper: false }, // cliff shelf
+  { y: 18, half: 9, taper: true },
+  { y: 17, half: 5, taper: false }, // cliff shelf
+  { y: 16, half: 5, taper: true },
+  { y: 15, half: 2, taper: false }, // cliff shelf
+  { y: 14, half: 2, taper: true },
+];
+
+/** Broad rock value bands, breaking exactly on cliff rims. */
+const rockColor = (y: number): number => {
+  if (y === 23) return SOIL;
+  if (y >= 21) return ROCK_LIGHT;
+  if (y >= 18) return ROCK_MID;
+  return ROCK_DARK;
+};
+
+const buildIsland = (ctx: SceneCtx): void => {
+  for (const band of ROCK_PROFILE) {
+    const rgb = rockColor(band.y);
+    const x0 = ICX - band.half;
+    const x1 = ICX + band.half;
+    const z0 = ICZ - band.half - 1;
+    const z1 = ICZ + band.half + 1;
+    if (band.taper) {
+      ctx.box(x0 + 1, band.y, z0 + 1, x1 - 1, band.y, z1 - 1, Matte, rgb);
+      taperRing(ctx, x0, z0, x1, z1, band.y, rgb);
+    } else {
+      ctx.box(x0, band.y, z0, x1, band.y, z1, Matte, rgb);
+    }
+  }
+  // Hanging tip under the last ring's solid core.
+  ctx.set(ICX, 13, ICZ, Matte, ROCK_DARK, SHAPE_SLAB_TOP);
+};
+
+// ---------------------------------------------------------------------------
+// Lawn — broad value zones (dark rim, bright meadows), never per-voxel noise.
+
+const buildLawn = (ctx: SceneCtx): void => {
+  ctx.box(29, LAWN_Y, 32, 61, LAWN_Y, 66, Matte, GRASS_MID);
+  rimRing(ctx, 29, 32, 61, 66, LAWN_Y, Matte, GRASS_DARK);
+  ctx.box(33, LAWN_Y, 40, 40, LAWN_Y, 46, Matte, GRASS_BRIGHT);
+  ctx.box(50, LAWN_Y, 57, 57, LAWN_Y, 62, Matte, GRASS_BRIGHT);
+  ctx.box(55, LAWN_Y, 34, 60, LAWN_Y, 39, Matte, GRASS_DARK);
+};
+
+// ---------------------------------------------------------------------------
+// Approach — slab path from the west rim to the pagoda plinth, banded stone.
+
+const buildPath = (ctx: SceneCtx): void => {
+  ctx.box(32, DECK, 47, 42, DECK, 47, Matte, STONE_DARK, SHAPE_SLAB_BOTTOM);
+  ctx.box(32, DECK, 48, 42, DECK, 48, Matte, STONE, SHAPE_SLAB_BOTTOM);
+  ctx.box(32, DECK, 49, 42, DECK, 49, Matte, STONE_DARK, SHAPE_SLAB_BOTTOM);
+};
+
+/** Vermilion torii straddling the path mouth; paired ramp kicks on the cap. */
+const buildTorii = (ctx: SceneCtx): void => {
+  ctx.box(34, DECK, 46, 34, 30, 46, Matte, TORII_RED);
+  ctx.box(34, DECK, 50, 34, 30, 50, Matte, TORII_RED);
+  ctx.box(34, 29, 45, 34, 29, 51, Matte, TORII_RED); // nuki tie beam
+  ctx.set(34, 30, 48, Matte, TORII_RED); // gakuzuka centre strut
+  ctx.box(34, 31, 44, 34, 31, 52, Matte, TORII_RED); // kasagi beam
+  ctx.box(34, 32, 45, 34, 32, 51, Gloss, ROOF_EAVE, SHAPE_SLAB_BOTTOM);
+  ctx.set(34, 32, 44, Gloss, ROOF_EAVE, SHAPE_RAMP_NZ); // deliberate paired
+  ctx.set(34, 32, 52, Gloss, ROOF_EAVE, SHAPE_RAMP_PZ); // end kicks
+};
+
+/** Stone lantern pair flanking the path — the only lawn-level glows. */
+const buildLanterns = (ctx: SceneCtx): void => {
+  for (const z of [45, 51]) {
+    ctx.set(39, DECK, z, Matte, STONE_DARK);
+    ctx.set(39, 26, z, Matte, STONE);
+    ctx.set(39, 27, z, Emissive, LANTERN);
+    ctx.set(39, 28, z, Matte, STONE_DARK, SHAPE_SLAB_BOTTOM);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Pagoda — stone plinth, two cream-walled tiers with timber posts and beam
+// rings, shoji VSLAB clusters on the camera faces, full hip-ring roofs.
 
 const buildPagoda = (ctx: SceneCtx): void => {
-  const y0 = TOP_Y + 1;
-  // Tier one: cream walls with dark timber corner posts.
-  ctx.box(40, y0, 34, 48, y0 + 4, 42, MaterialClass.Matte, CREAM);
-  for (const x of [40, 48]) {
-    for (const z of [34, 42]) ctx.box(x, y0, z, x, y0 + 4, z, MaterialClass.Matte, TIMBER);
+  // Plinth with a light stone border and a 2-cell veranda ledge.
+  ctx.box(44, DECK, 42, 56, DECK, 54, Matte, STONE_DARK);
+  rimRing(ctx, 43, 41, 57, 55, DECK, Matte, STONE);
+
+  // Tier 1 walls (y26..29) + timber posts + beam ring at y30.
+  wallShell(ctx, 45, 43, 55, 53, 26, 29, CREAM);
+  for (const [px, pz] of [
+    [45, 43],
+    [50, 43],
+    [55, 43],
+    [45, 53],
+    [50, 53],
+    [55, 53],
+    [55, 48],
+    [45, 46],
+    [45, 50],
+  ] as const) {
+    ctx.box(px, 26, pz, px, 29, pz, Matte, TIMBER);
   }
-  ctx.box(40, y0 + 4, 34, 48, y0 + 4, 42, MaterialClass.Matte, TIMBER);
-  // South-facing doorway toward the torii path.
-  for (let y = y0; y <= y0 + 2; y++) {
-    for (let x = 43; x <= 45; x++) ctx.clear(x, y, 42);
+  rimRing(ctx, 45, 43, 55, 53, 30, Matte, TIMBER);
+
+  // Framed door on the west face, opening toward the torii.
+  for (let y = 26; y <= 28; y++) {
+    for (let z = 47; z <= 49; z++) ctx.clear(45, y, z);
   }
-  roofTier(ctx, 39, 33, 49, 43, y0 + 5);
-  // Tier two.
-  ctx.box(42, y0 + 6, 36, 46, y0 + 9, 40, MaterialClass.Matte, CREAM);
-  for (const x of [42, 46]) {
-    for (const z of [36, 40]) ctx.box(x, y0 + 6, z, x, y0 + 9, z, MaterialClass.Matte, TIMBER);
+
+  // Altar glint visible through the doorway.
+  ctx.set(50, 26, 48, Matte, STONE_DARK);
+  ctx.set(50, 27, 48, CLS_METAL, GOLD);
+
+  // Shoji screen clusters between posts (south + west camera faces).
+  ctx.box(46, 26, 54, 49, 28, 54, Matte, SHOJI, SHAPE_VSLAB_NZ);
+  ctx.box(51, 26, 54, 54, 28, 54, Matte, SHOJI, SHAPE_VSLAB_NZ);
+  ctx.box(44, 26, 44, 44, 28, 45, Matte, SHOJI, SHAPE_VSLAB_PX);
+  ctx.box(44, 26, 51, 44, 28, 52, Matte, SHOJI, SHAPE_VSLAB_PX);
+
+  // Hanging lanterns flanking the door, timber brackets above.
+  for (const z of [46, 50]) {
+    ctx.set(44, 28, z, Emissive, LANTERN);
+    ctx.set(44, 29, z, Matte, TIMBER, SHAPE_SLAB_TOP);
   }
-  roofTier(ctx, 41, 35, 47, 41, y0 + 10);
-  ctx.set(44, y0 + 11, 38, MaterialClass.Matte, ROOF_SLATE);
-  ctx.set(44, y0 + 12, 38, MaterialClass.Gloss, GOLD);
-  ctx.set(44, y0 + 13, 38, MaterialClass.Gloss, GOLD, SHAPE_SLAB_BOTTOM);
+
+  // Tier 1 roof: eave ring, hip ring, slate deck for tier 2.
+  eaveRing(ctx, 44, 42, 56, 54, 30);
+  ctx.box(45, 31, 43, 55, 31, 53, Gloss, ROOF_SLATE);
+  hipRing(ctx, 45, 43, 55, 53, 31, ROOF_SLATE);
+
+  // Veranda balustrade ring on the tier-1 deck edge — vermilion panels
+  // between timber corner posts (all four VSLAB orientations, full ring).
+  ctx.box(47, 32, 44, 53, 32, 44, Matte, TORII_RED, SHAPE_VSLAB_NZ);
+  ctx.box(47, 32, 52, 53, 32, 52, Matte, TORII_RED, SHAPE_VSLAB_PZ);
+  ctx.box(46, 32, 45, 46, 32, 51, Matte, TORII_RED, SHAPE_VSLAB_NX);
+  ctx.box(54, 32, 45, 54, 32, 51, Matte, TORII_RED, SHAPE_VSLAB_PX);
+  for (const [bx, bz] of [
+    [46, 44],
+    [54, 44],
+    [46, 52],
+    [54, 52],
+  ] as const) {
+    ctx.set(bx, 32, bz, Matte, TIMBER);
+  }
+
+  // Tier 2 walls (y32..35) + posts + beam ring at y36.
+  wallShell(ctx, 47, 45, 53, 51, 32, 35, CREAM);
+  for (const [px, pz] of [
+    [47, 45],
+    [50, 45],
+    [53, 45],
+    [47, 51],
+    [50, 51],
+    [53, 51],
+    [47, 48],
+    [53, 48],
+  ] as const) {
+    ctx.box(px, 32, pz, px, 35, pz, Matte, TIMBER);
+  }
+  rimRing(ctx, 47, 45, 53, 51, 36, Matte, TIMBER);
+
+  // Tier 2 shoji clusters.
+  ctx.box(48, 32, 52, 49, 34, 52, Matte, SHOJI, SHAPE_VSLAB_NZ);
+  ctx.box(51, 32, 52, 52, 34, 52, Matte, SHOJI, SHAPE_VSLAB_NZ);
+  ctx.box(46, 32, 46, 46, 34, 47, Matte, SHOJI, SHAPE_VSLAB_PX);
+  ctx.box(46, 32, 49, 46, 34, 50, Matte, SHOJI, SHAPE_VSLAB_PX);
+
+  // Tier 2 roof: eave ring, then hip rings closing to the ridge.
+  eaveRing(ctx, 46, 44, 54, 52, 36);
+  ctx.box(47, 37, 45, 53, 37, 51, Gloss, ROOF_SLATE);
+  hipRing(ctx, 47, 45, 53, 51, 37, ROOF_SLATE);
+  ctx.box(48, 38, 46, 52, 38, 50, Gloss, ROOF_SLATE);
+  hipRing(ctx, 48, 46, 52, 50, 38, ROOF_SLATE);
+  ctx.box(49, 39, 47, 51, 39, 49, Gloss, ROOF_RIDGE);
+  hipRing(ctx, 49, 47, 51, 49, 39, ROOF_RIDGE);
+
+  // Gold finial at the apex.
+  ctx.set(50, 40, 48, CLS_METAL, GOLD);
+  ctx.set(50, 41, 48, CLS_METAL, GOLD, SHAPE_SLAB_BOTTOM);
 };
 
-const buildLanterns = (ctx: SceneCtx): void => {
-  const y0 = TOP_Y + 1;
-  for (const z of [46, 50, 54]) {
-    for (const x of [41, 47]) {
-      ctx.box(x, y0, z, x, y0 + 1, z, MaterialClass.Matte, TIMBER);
-      ctx.set(x, y0 + 2, z, MaterialClass.Emissive, LANTERN);
-      ctx.set(x, y0 + 3, z, MaterialClass.Matte, ROOF_SLATE, SHAPE_SLAB_BOTTOM);
-    }
+// ---------------------------------------------------------------------------
+// Water — stone-rimmed basin one level above the lawn, water one level below
+// the rim top, a channel east to the rim, and a VSLAB sheet falling off the
+// camera-facing east face into mist.
+
+const buildBasinAndFalls = (ctx: SceneCtx): void => {
+  // Basin rim with a gap on the east side where the channel leaves.
+  rimRing(ctx, 52, 56, 58, 62, DECK, Matte, STONE);
+  for (const [cx, cz] of [
+    [52, 56],
+    [58, 56],
+    [52, 62],
+    [58, 62],
+  ] as const) {
+    ctx.set(cx, DECK, cz, Matte, STONE_DARK);
   }
+  for (let z = 58; z <= 60; z++) ctx.clear(58, DECK, z);
+
+  // Pool, deep centre, and the outbound channel cut into the lawn.
+  ctx.box(53, LAWN_Y, 57, 57, LAWN_Y, 61, CLS_WATER, WATER);
+  ctx.box(54, LAWN_Y, 58, 56, LAWN_Y, 60, CLS_WATER, WATER_DEEP);
+  ctx.box(58, LAWN_Y, 58, 61, LAWN_Y, 60, CLS_WATER, WATER);
+  ctx.box(59, DECK, 57, 61, DECK, 57, Matte, STONE_DARK);
+  ctx.box(59, DECK, 61, 61, DECK, 61, Matte, STONE_DARK);
+
+  // Waterfall sheet hugging the east face: foam centre, water edges.
+  for (let y = 14; y <= LAWN_Y; y++) {
+    ctx.set(62, y, 58, CLS_WATER, y === 14 ? FOAM : WATER, SHAPE_VSLAB_NX);
+    ctx.set(62, y, 59, CLS_WATER, FOAM, SHAPE_VSLAB_NX);
+    ctx.set(62, y, 60, CLS_WATER, y === 14 ? FOAM : WATER, SHAPE_VSLAB_NX);
+  }
+
+  // Mist puffs below the lip.
+  ctx.box(59, 13, 57, 62, 13, 61, Matte, CLOUD_LIGHT, SHAPE_SLAB_BOTTOM);
+  ctx.box(60, 12, 58, 61, 12, 60, Matte, CLOUD_SHADE, SHAPE_SLAB_TOP);
 };
 
-const buildShrineStone = (ctx: SceneCtx): void => {
-  const y0 = TOP_Y + 1;
-  ctx.box(50, y0, 40, 51, y0, 41, MaterialClass.Matte, STONE);
-  ctx.set(50, y0 + 1, 40, MaterialClass.Matte, ROCK_LIGHT);
-  ctx.set(51, y0 + 1, 41, MaterialClass.Gloss, STONE, SHAPE_SLAB_BOTTOM);
-  // A few mossy boulders scattered on the lawn.
-  ctx.set(36, y0, 38, MaterialClass.Matte, ROCK_LIGHT);
-  ctx.set(35, y0, 39, MaterialClass.Matte, ROCK_DARK, SHAPE_SLAB_BOTTOM);
-  ctx.set(52, y0, 56, MaterialClass.Matte, ROCK_LIGHT, SHAPE_SLAB_BOTTOM);
-  ctx.set(34, y0, 50, MaterialClass.Matte, ROCK_DARK, SHAPE_SLAB_BOTTOM);
+/** The shrine orb — a single rounded plasma flame floating over the basin. */
+const buildShrineOrb = (ctx: SceneCtx): void => {
+  ctx.set(55, 27, 59, CLS_PLASMA, PLASMA, SHAPE_SLAB_TOP);
+  ctx.set(55, 28, 59, CLS_PLASMA, PLASMA);
+  ctx.set(55, 29, 59, CLS_PLASMA, FOAM, SHAPE_SLAB_BOTTOM);
 };
 
-const buildCloud = (
+// ---------------------------------------------------------------------------
+// Clouds — three puffs drifting past the cone, kept inside the island's
+// horizontal bounds, slab-softened top and bottom. Matte soft greys: a light
+// crown over a shaded belly, so they never read as emissive blooms.
+
+const cloudPuff = (
   ctx: SceneCtx,
-  cx: number,
-  cy: number,
-  cz: number,
-  rx: number,
-  rz: number,
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  y: number,
 ): void => {
-  for (let z = cz - rz; z <= cz + rz; z++) {
-    for (let x = cx - rx; x <= cx + rx; x++) {
-      const nx = (x - cx) / rx;
-      const nz = (z - cz) / rz;
-      const d = nx * nx + nz * nz;
-      const wobble = (((x * 13 + z * 29) % 3) - 1) * 0.18;
-      if (d > 1 + wobble) continue;
-      ctx.set(x, cy, z, MaterialClass.Matte, CLOUD, SHAPE_SLAB_TOP);
-      if (d < 0.35) ctx.set(x, cy + 1, z, MaterialClass.Matte, CLOUD, SHAPE_SLAB_BOTTOM);
-    }
-  }
+  ctx.box(x0, y, z0, x1, y, z1, Matte, CLOUD_LIGHT);
+  ctx.box(x0 + 1, y + 1, z0 + 1, x1 - 1, y + 1, z1 - 1, Matte, CLOUD_LIGHT, SHAPE_SLAB_BOTTOM);
+  ctx.box(x0 + 1, y - 1, z0 + 1, x1 - 1, y - 1, z1 - 1, Matte, CLOUD_SHADE, SHAPE_SLAB_TOP);
 };
+
+const buildClouds = (ctx: SceneCtx): void => {
+  cloudPuff(ctx, 29, 37, 34, 43, 13); // west, mid-height
+  cloudPuff(ctx, 54, 52, 60, 58, 10); // south-east, low
+  cloudPuff(ctx, 58, 39, 61, 43, 16); // north-east, small and high
+};
+
+// ---------------------------------------------------------------------------
 
 const build = (ctx: SceneCtx): void => {
   buildIsland(ctx);
+  buildLawn(ctx);
+
   buildPath(ctx);
-  buildPond(ctx);
   buildTorii(ctx);
-  buildPagoda(ctx);
   buildLanterns(ctx);
-  buildShrineStone(ctx);
-  buildCloud(ctx, 20, 12, 24, 6, 4);
-  buildCloud(ctx, 70, 11, 30, 5, 4);
-  buildCloud(ctx, 24, 13, 68, 5, 5);
-  buildCloud(ctx, 68, 12, 70, 6, 4);
+
+  buildPagoda(ctx);
+
+  buildBasinAndFalls(ctx);
+  buildShrineOrb(ctx);
+
+  buildClouds(ctx);
 };
 
 export const scene: SceneSpec = {
